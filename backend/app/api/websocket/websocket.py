@@ -1,17 +1,29 @@
 """
 WebSocket 路由端点
+
+方案 A：全链路异步流式 WebRTC 架构
+- 目标延迟: < 250ms
+- LLM 流式 → CosyVoice 流式切片 → SoulX 时空缓存 → WebRTC UDP
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from loguru import logger
 
 from app.api.websocket.handler import manager, handler
-from app.api.websocket import video_stream_stage2  # 阶段2优化版
+from app.api.webrtc import streaming_endpoint  # ✅ 全链路异步流式架构
+from app.api.webrtc import video_stream_webrtc  # 基础 WebRTC (备用)
 
 
 router = APIRouter()
 
-# 包含视频流路由（使用阶段2优化版）
-router.include_router(video_stream_stage2.router, tags=["video_stream"])
+# ========== 方案 A：全链路异步流式架构（主路线） ==========
+router.include_router(
+    streaming_endpoint.router,
+    prefix="/webrtc",
+    tags=["webrtc_streaming"]
+)
+
+# ========== 备用：基础 WebRTC ==========
+router.include_router(video_stream_webrtc.router, tags=["webrtc_basic"])
 
 
 @router.websocket("/ws")

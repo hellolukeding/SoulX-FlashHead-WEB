@@ -9,37 +9,82 @@ import {
 } from '@ant-design/icons';
 import { message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import { negotiateOffer, sendHumanMessage } from '../api';
 import ChatSidebar, { ChatMessage } from './ChatSidebar';
 import Settings from './Settings';
 
+interface WebSocketMessage {
+    type: string;
+    data?: any;
+    message?: string;
+    session_id?: string;
+}
+
 export default function VideoChat() {
-    const [sessionId, setSessionId] = useState<string>('0');
     const [isStarted, setIsStarted] = useState(false);
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [callDuration, setCallDuration] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
+    const [isInitialized, setIsInitialized] = useState(false);
 
     const videoRef = useRef<HTMLVideoElement>(null);
-    const localVideoRef = useRef<HTMLVideoElement>(null);
-    const audioRef = useRef<HTMLAudioElement>(null);
-    const pcRef = useRef<RTCPeerConnection | null>(null);
-    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const wsRef = useRef<WebSocket | null>(null);
     const durationRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const localStreamRef = useRef<MediaStream | null>(null);
 
     const [isVoiceChatOn, setIsVoiceChatOn] = useState(false);
     const [isSpeakerOn, setIsSpeakerOn] = useState(true);
-    const [isCameraOn, setIsCameraOn] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-    const [isAISpeaking, setIsAISpeaking] = useState(false); // AI 是否正在说话
-    const isAISpeakingRef = useRef(false); // 用于在闭包中获取最新值
+    const [isAISpeaking, setIsAISpeaking] = useState(false);
+    const isAISpeakingRef = useRef(false);
     const recognitionRef = useRef<any>(null);
     const aiSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const micPermissionStreamRef = useRef<MediaStream | null>(null); // 用于权限检查的流
+    const micPermissionStreamRef = useRef<MediaStream | null>(null);
 
-    // 同步isAISpeaking状态到ref
+    // Processing state for better feedback - 阶段2新增
+    const [processingState, setProcessingState] = useState<{
+        stage: 'idle' | 'thinking' | 'tts' | 'generating' | 'playing';
+        progress: number;
+        message: string;
+    }>({
+        stage: 'idle',
+        progress: 0,
+        message: ''
+    });
+
+    // MSE MediaSource
+    const mediaSourceRef = useRef<MediaSource | null>(null);
+    const sourceBufferRef = useRef<SourceBuffer | null>(null);
+    const queueRef = useRef<Uint8Array[]>([]);
+
+    // WebSocket URL (可配置)
+    const [wsUrl, setWsUrl] = useState<string>('');  // 空值表示使用代理
+    const [debugMode, setDebugMode] = useState<boolean>(false);
+
+    // Load configuration from localStorage
+    useEffect(() => {
+        const LOCAL_STORAGE_KEY = 'livetalking_config';
+        try {
+            const savedConfig = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (savedConfig) {
+                const config = JSON.parse(savedConfig);
+                if (config.backend_url) {
+                    setWsUrl(config.backend_url);
+                }
+                if (config.debug_mode !== undefined) {
+                    setDebugMode(config.debug_mode);
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to load config:', e);
+        }
+    }, []);
+
+    // Construct WebSocket URL (使用代理路径)
+    // 如果 wsUrl 为空，使用代理路径（开发模式）
+    // 否则使用完整 URL（生产模式）
+    const WS_URL = wsUrl ? `${wsUrl}/api/v1/video` : `/api/v1/video`;
+
+    // 同步 isAISpeaking 状态到 ref
     useEffect(() => {
         isAISpeakingRef.current = isAISpeaking;
     }, [isAISpeaking]);
@@ -51,6 +96,7 @@ export default function VideoChat() {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
+    // 通话时长计时器
     useEffect(() => {
         if (isStarted) {
             durationRef.current = setInterval(() => {
@@ -70,6 +116,413 @@ export default function VideoChat() {
         };
     }, [isStarted]);
 
+    // 标记 AI 开始说话
+    const markAISpeaking = () => {
+        setIsAISpeaking(true);
+
+        if (aiSpeakingTimeoutRef.current) {
+            clearTimeout(aiSpeakingTimeoutRef.current);
+        }
+
+        aiSpeakingTimeoutRef.current = setTimeout(() => {
+            console.log('[AEC] AI stopped speaking (no new messages for 500ms)');
+            setIsAISpeaking(false);
+        }, 500);
+    };
+
+    // 初始化 MediaSource
+    const initMediaSource = () => {
+        if ('MediaSource' in window && videoRef.current) {
+            const mediaSource = new MediaSource();
+            mediaSourceRef.current = mediaSource;
+            videoRef.current.src = URL.createObjectURL(mediaSource);
+
+            mediaSource.addEventListener('sourceopen', () => {
+                console.log('[MSE] MediaSource opened');
+                try {
+                    const mimeCodec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+                    const sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
+                    sourceBufferRef.current = sourceBuffer;
+
+                    sourceBuffer.addEventListener('updateend', () => {
+                        // 处理队列中的下一个数据
+                        if (queueRef.current.length > 0 && !sourceBuffer.updating) {
+                            try {
+                                const data = queueRef.current.shift();
+                                if (data) {
+                                    sourceBuffer.appendBuffer(data);
+                                }
+                            } catch (e) {
+                                console.error('[MSE] Error appending buffer from queue:', e);
+                            }
+                        }
+                    });
+
+                    console.log('[MSE] SourceBuffer created:', mimeCodec);
+
+                    // 自动播放视频
+                    if (videoRef.current) {
+                        videoRef.current.play().catch(e => {
+                            console.warn('[MSE] Auto-play failed:', e);
+                        });
+                    }
+                } catch (e) {
+                    console.error('[MSE] Failed to create SourceBuffer:', e);
+                    message.error('视频播放器初始化失败');
+                }
+            });
+
+            mediaSource.addEventListener('sourceended', () => {
+                console.log('[MSE] MediaSource ended');
+            });
+
+            console.log('[MSE] MediaSource initialized');
+        } else {
+            console.error('[MSE] MediaSource not supported');
+            message.error('浏览器不支持 MediaSource API');
+        }
+    };
+
+    // 连接 WebSocket
+    const connectWebSocket = () => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            console.log('[WS] Already connected');
+            return;
+        }
+
+        console.log('[WS] Connecting to', WS_URL);
+        const ws = new WebSocket(WS_URL);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+            console.log('[WS] Connected to', WS_URL);
+            if (debugMode) console.log('[WS] Debug mode enabled');
+            message.success('WebSocket 连接成功');
+
+            // 自动初始化会话
+            console.log('[WS] Initializing session...');
+            ws.send(JSON.stringify({
+                type: 'init',
+                data: {
+                    reference_image: 'default'
+                }
+            }));
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg: WebSocketMessage = JSON.parse(event.data);
+                console.log('[WS] Message received:', msg.type);
+
+                switch (msg.type) {
+                    case 'connected':
+                        console.log('[WS] Session ID:', msg.session_id);
+                        if (msg.message) {
+                            message.info(msg.message);
+                        }
+                        break;
+
+                    case 'initialized':
+                        setIsInitialized(true);
+                        setIsStarted(true);
+                        setIsLoading(false);
+                        message.success('✅ 会话初始化成功！现在可以发送消息了');
+                        break;
+
+                    case 'status':
+                        // Processing status updates - 阶段2新增
+                        if (msg.data?.stage) {
+                            setProcessingState({
+                                stage: msg.data.stage,
+                                progress: msg.data.progress || 0,
+                                message: msg.data.message || ''
+                            });
+                        }
+                        break;
+
+                    case 'ai_text_chunk':
+                        // AI 文本回复
+                        if (msg.data?.text) {
+                            setProcessingState({
+                                stage: 'playing',
+                                progress: 100,
+                                message: '正在回复...'
+                            });
+
+                            markAISpeaking();
+
+                            setChatHistory(prev => {
+                                const lastMsg = prev[prev.length - 1];
+                                if (lastMsg && lastMsg.role === 'assistant') {
+                                    const updated = [
+                                        ...prev.slice(0, -1),
+                                        { ...lastMsg, content: lastMsg.content + msg.data.text }
+                                    ];
+                                    return updated;
+                                } else {
+                                    const newMessage = {
+                                        role: 'assistant' as const,
+                                        content: msg.data.text,
+                                        timestamp: Date.now()
+                                    };
+                                    return [...prev, newMessage];
+                                }
+                            });
+                        }
+                        break;
+
+                    case 'ai_audio':
+                        // TTS 音频
+                        if (msg.data?.audio_data) {
+                            console.log('[WS] Audio received:', msg.data.audio_format, msg.data.sample_rate, 'Hz');
+                            setProcessingState({
+                                stage: 'playing',
+                                progress: 75,
+                                message: '正在播放语音...'
+                            });
+                            playAudio(msg.data.audio_data);
+                        }
+                        break;
+
+                    case 'video_frame':
+                        // H.264 视频帧（传统模式）
+                        if (msg.data?.video_data) {
+                            console.log('[WS] Video frame received:', msg.data.video_frames, 'frames');
+                            setProcessingState({
+                                stage: 'playing',
+                                progress: 90,
+                                message: '正在显示视频...'
+                            });
+                            appendVideoData(msg.data.video_data);
+                        }
+                        break;
+
+                    case 'video_chunk':
+                        // H.264 视频片段（流式模式 - 阶段3优化）
+                        if (msg.data?.video_data) {
+                            const { chunk_index, total_chunks, video_frames, duration, is_first, is_last } = msg.data;
+                            console.log(`[WS] Video chunk received: ${chunk_index + 1}/${total_chunks}, ${video_frames} frames, ${duration?.toFixed(2)}s`);
+
+                            setProcessingState({
+                                stage: 'playing',
+                                progress: 60 + ((chunk_index + 1) / total_chunks) * 30,
+                                message: `正在显示视频 ${chunk_index + 1}/${total_chunks}...`
+                            });
+
+                            appendVideoData(msg.data.video_data);
+
+                            // 如果是最后一段，稍后重置状态
+                            if (is_last) {
+                                setTimeout(() => {
+                                    setProcessingState({
+                                        stage: 'idle',
+                                        progress: 0,
+                                        message: ''
+                                    });
+                                }, 2000);
+                            }
+                        }
+                        break;
+
+                    case 'complete':
+                        if (msg.data?.success) {
+                            console.log('[WS] Message processing complete');
+                            // Reset processing state after a delay
+                            setTimeout(() => {
+                                setProcessingState({
+                                    stage: 'idle',
+                                    progress: 0,
+                                    message: ''
+                                });
+                            }, 2000);
+                        } else {
+                            console.warn('[WS] Message processing completed with error:', msg.data?.message);
+                            setProcessingState({
+                                stage: 'idle',
+                                progress: 0,
+                                message: ''
+                            });
+                        }
+                        break;
+
+                    case 'error':
+                        console.error('[WS] Error:', msg.message);
+                        message.error('错误: ' + (msg.message || '未知错误'));
+                        break;
+
+                    default:
+                        console.log('[WS] Unknown message type:', msg.type);
+                }
+            } catch (e) {
+                console.error('[WS] Failed to parse message:', e);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('[WS] Error:', error);
+            message.error('WebSocket 连接错误');
+        };
+
+        ws.onclose = () => {
+            console.log('[WS] Connection closed');
+            setIsStarted(false);
+            setIsInitialized(false);
+            setIsLoading(false);
+        };
+    };
+
+    // 播放音频
+    const playAudio = (base64Audio: string) => {
+        try {
+            const audioData = base64ToArrayBuffer(base64Audio);
+            const audioBlob = new Blob([audioData], { type: 'audio/wav' });
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            const audio = new Audio(audioUrl);
+            audio.play();
+
+            console.log('[Audio] Playing audio...');
+
+            audio.onended = () => {
+                URL.revokeObjectURL(audioUrl);
+                console.log('[Audio] Audio playback completed');
+            };
+
+            audio.onerror = (e) => {
+                console.error('[Audio] Playback error:', e);
+            };
+        } catch (e) {
+            console.error('[Audio] Failed to play audio:', e);
+        }
+    };
+
+    // Base64 转 ArrayBuffer
+    const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+        const binaryString = window.atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    };
+
+    // 添加视频数据到 MSE
+    const appendVideoData = (base64Video: string) => {
+        if (!sourceBufferRef.current) {
+            console.warn('[MSE] SourceBuffer not ready');
+            return;
+        }
+
+        try {
+            const videoData = base64ToArrayBuffer(base64Video);
+            const data = new Uint8Array(videoData);
+
+            if (!sourceBufferRef.current.updating) {
+                sourceBufferRef.current.appendBuffer(data);
+            } else {
+                // 如果 SourceBuffer 忙碌，添加到队列
+                queueRef.current.push(data);
+                console.log('[MSE] Buffer busy, added to queue. Queue size:', queueRef.current.length);
+            }
+        } catch (e) {
+            console.error('[MSE] Failed to append video data:', e);
+        }
+    };
+
+    // 启动连接
+    const start = async () => {
+        if (isStarted || isLoading) return;
+
+        setIsLoading(true);
+
+        try {
+            // 初始化 MediaSource
+            initMediaSource();
+
+            // 连接 WebSocket
+            connectWebSocket();
+        } catch (e) {
+            console.error('[Start] Failed to start:', e);
+            message.error('启动失败: ' + e);
+            setIsLoading(false);
+        }
+    };
+
+    // 停止连接
+    const stop = () => {
+        if (wsRef.current) {
+            wsRef.current.close();
+            wsRef.current = null;
+        }
+
+        // 关闭 MediaSource
+        if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
+            try {
+                mediaSourceRef.current.endOfStream();
+            } catch (e) {
+                console.error('[MSE] Failed to end stream:', e);
+            }
+        }
+
+        setIsStarted(false);
+        setIsInitialized(false);
+    };
+
+    // 发送文本消息
+    const handleSendMessage = async (text: string) => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            message.error('WebSocket 未连接');
+            return;
+        }
+
+        if (!isInitialized) {
+            message.error('会话未初始化，请等待');
+            return;
+        }
+
+        setChatHistory(prev => [...prev, {
+            role: 'user',
+            content: text,
+            timestamp: Date.now()
+        }]);
+
+        // Show processing state - 阶段2新增
+        setProcessingState({
+            stage: 'thinking',
+            progress: 10,
+            message: '正在理解您的问题...'
+        });
+
+        try {
+            wsRef.current.send(JSON.stringify({
+                type: 'message',
+                data: {
+                    text: text,
+                    streaming: true  // 启用流式视频生成（阶段3）
+                }
+            }));
+            console.log('[WS] Message sent:', text);
+        } catch (e) {
+            console.error('[WS] Failed to send message:', e);
+            message.error('发送失败');
+            setProcessingState({
+                stage: 'idle',
+                progress: 0,
+                message: ''
+            });
+        }
+    };
+
+    // 切换扬声器
+    const toggleSpeaker = () => {
+        setIsSpeakerOn(!isSpeakerOn);
+        if (videoRef.current) {
+            videoRef.current.muted = !isSpeakerOn;
+        }
+    };
+
+    // 初始化语音识别
     useEffect(() => {
         if (isVoiceChatOn && isStarted) {
             const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -79,74 +532,33 @@ export default function VideoChat() {
                 return;
             }
 
-            // 先请求麦克风权限（确保触发权限提示）
             message.loading({ content: '正在请求麦克风权限...', key: 'micPermission', duration: 0 });
 
-            // 先枚举可用的音频设备，帮助诊断问题
             navigator.mediaDevices.enumerateDevices()
                 .then((devices) => {
                     const audioInputs = devices.filter(device => device.kind === 'audioinput');
-                    const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
-                    const videoInputs = devices.filter(device => device.kind === 'videoinput');
-
-                    console.log('[ASR] ========== Device Enumeration ==========');
-                    console.log('[ASR] Audio Input devices (microphones):', audioInputs.length);
-                    audioInputs.forEach((device, index) => {
-                        console.log(`  [${index}] ${device.label || '(无标签)'} (ID: ${device.deviceId})`);
-                    });
-                    console.log('[ASR] Audio Output devices (speakers):', audioOutputs.length);
-                    audioOutputs.forEach((device, index) => {
-                        console.log(`  [${index}] ${device.label || '(无标签)'}`);
-                    });
-                    console.log('[ASR] Video Input devices (cameras):', videoInputs.length);
-                    videoInputs.forEach((device, index) => {
-                        console.log(`  [${index}] ${device.label || '(无标签)'}`);
-                    });
-                    console.log('[ASR] ========================================');
+                    console.log('[ASR] Audio inputs:', audioInputs.length);
 
                     if (audioInputs.length === 0) {
-                        console.warn('[ASR] ❌ No audio input devices found!');
-                        message.error({
-                            content: '未检测到麦克风设备。请检查：1) macOS系统设置中Chrome是否已获得麦克风权限 2) 麦克风是否被其他应用占用',
-                            duration: 8
-                        });
-                    } else {
-                        console.log('[ASR] ✓ Found audio input devices');
+                        message.error('未检测到麦克风设备');
                     }
 
                     return navigator.mediaDevices.getUserMedia({ audio: true });
                 })
                 .then((stream) => {
                     message.success({ content: '麦克风权限已授予', key: 'micPermission', duration: 2 });
-                    console.log('[ASR] Microphone permission granted');
-
-                    // 保存流引用，用于后续清理
                     micPermissionStreamRef.current = stream;
-
-                    // 立即停止音频轨道（我们只需要权限，不需要实际的音频流）
                     stream.getTracks().forEach(track => track.stop());
-
-                    // 权限获取成功后，启动语音识别
                     initSpeechRecognition();
                 })
                 .catch((err: any) => {
                     setIsVoiceChatOn(false);
-
-                    // 根据不同的错误类型提供不同的提示
                     if (err.name === 'NotAllowedError') {
-                        message.error({ content: '麦克风权限被拒绝，请允许麦克风访问以使用语音识别功能', key: 'micPermission', duration: 5 });
-                        message.warning({
-                            content: '如需使用语音识别，请点击浏览器地址栏左侧的锁图标，允许麦克风访问',
-                            duration: 6
-                        });
+                        message.error('麦克风权限被拒绝');
                     } else if (err.name === 'NotFoundError') {
-                        message.error({ content: '未检测到麦克风设备，请连接麦克风后重试', key: 'micPermission', duration: 5 });
-                        message.warning({
-                            content: '请检查麦克风是否已正确连接，并在系统设置中确认音频输入设备可用',
-                            duration: 6
-                        });
+                        message.error('未检测到麦克风设备');
                     } else {
-                        message.error({ content: `麦克风访问失败: ${err.message || err.name}`, key: 'micPermission', duration: 5 });
+                        message.error(`麦克风访问失败: ${err.message}`);
                     }
                     console.error('[ASR] Microphone permission denied:', err);
                 });
@@ -154,9 +566,7 @@ export default function VideoChat() {
             if (recognitionRef.current) {
                 recognitionRef.current.stop();
                 recognitionRef.current = null;
-                console.log('[ASR] Speech recognition stopped');
             }
-            // 清理权限检查的流
             if (micPermissionStreamRef.current) {
                 micPermissionStreamRef.current.getTracks().forEach(track => track.stop());
                 micPermissionStreamRef.current = null;
@@ -168,13 +578,12 @@ export default function VideoChat() {
                 recognitionRef.current.stop();
                 recognitionRef.current = null;
             }
-            // 清理权限检查的流
             if (micPermissionStreamRef.current) {
                 micPermissionStreamRef.current.getTracks().forEach(track => track.stop());
                 micPermissionStreamRef.current = null;
             }
         };
-    }, [isVoiceChatOn, isStarted]); // 移除 isAISpeaking 依赖
+    }, [isVoiceChatOn, isStarted]);
 
     // 初始化语音识别
     const initSpeechRecognition = () => {
@@ -185,7 +594,6 @@ export default function VideoChat() {
         recognition.lang = 'zh-CN';
 
         recognition.onresult = (event: any) => {
-            // AI 正在说话时，忽略识别结果（使用ref获取最新值）
             if (isAISpeakingRef.current) {
                 console.log('[ASR] AI is speaking, ignoring input');
                 return;
@@ -202,23 +610,12 @@ export default function VideoChat() {
         recognition.onerror = (event: any) => {
             console.error('[ASR] Speech recognition error:', event.error);
             if (event.error === 'not-allowed') {
-                message.error('语音识别权限被拒绝，请在浏览器设置中允许麦克风权限', 5);
-                message.warning('请点击浏览器地址栏左侧的锁图标，允许麦克风访问', 6);
+                message.error('语音识别权限被拒绝');
                 setIsVoiceChatOn(false);
-            } else if (event.error === 'no-speech') {
-                // 忽略无语音错误，继续监听
-                console.log('[ASR] No speech detected, continuing...');
-            } else if (event.error === 'network') {
-                console.error('[ASR] Network error, will retry...');
-            } else if (event.error === 'aborted') {
-                console.log('[ASR] Recognition aborted');
-            } else {
-                console.warn('[ASR] Unhandled recognition error:', event.error);
             }
         };
 
         recognition.onend = () => {
-            // 如果麦克风开启且服务已连接，则自动重启（持续监听）
             if (isVoiceChatOn && isStarted && recognitionRef.current) {
                 try {
                     recognition.start();
@@ -239,241 +636,17 @@ export default function VideoChat() {
         }
     };
 
-    const resetTimer = () => {
-        if (timerRef.current) clearTimeout(timerRef.current);
-        if (isStarted) {
-            timerRef.current = setTimeout(() => {
-                message.info('长时间未操作，已自动断开连接');
-                stop();
-            }, 60000);
-        }
-    };
-
-    // 标记AI开始说话（由data channel消息触发）
-    const markAISpeaking = () => {
-        setIsAISpeaking(true);
-
-        // 清除之前的定时器
-        if (aiSpeakingTimeoutRef.current) {
-            clearTimeout(aiSpeakingTimeoutRef.current);
-        }
-
-        // 500ms后如果没有新消息，则认为AI停止说话
-        aiSpeakingTimeoutRef.current = setTimeout(() => {
-            console.log('[AEC] AI stopped speaking (no new messages for 500ms)');
-            setIsAISpeaking(false);
-        }, 500);
-    };
-
-    const start = async () => {
-        if (isStarted || isLoading) return;
-
-        setIsLoading(true);
-
-        // 先开启本地摄像头
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'user' },
-                audio: false
-            });
-            localStreamRef.current = stream;
-            if (localVideoRef.current) {
-                localVideoRef.current.srcObject = stream;
-            }
-            setIsCameraOn(true);
-        } catch (err) {
-            console.error('无法获取摄像头', err);
-            // 摄像头获取失败不阻止通话
-        }
-
-        const config: RTCConfiguration = {
-            sdpSemantics: 'unified-plan'
-        } as any;
-
-        const pc = new RTCPeerConnection(config);
-        pcRef.current = pc;
-
-        const dc = pc.createDataChannel("chat");
-        dc.onmessage = (event) => {
-            const text = event.data;
-            if (text) {
-                // 每次收到AI消息时，标记AI正在说话
-                markAISpeaking();
-
-                setChatHistory(prev => {
-                    const lastMsg = prev[prev.length - 1];
-                    if (lastMsg && lastMsg.role === 'assistant') {
-                        const updated = [
-                            ...prev.slice(0, -1),
-                            { ...lastMsg, content: lastMsg.content + text }
-                        ];
-                        return updated;
-                    } else {
-                        const newMessage = {
-                            role: 'assistant' as const,
-                            content: text,
-                            timestamp: Date.now()
-                        };
-                        return [...prev, newMessage];
-                    }
-                });
-            }
-        };
-
-        pc.addEventListener('track', (evt) => {
-            if (evt.track.kind === 'video') {
-                if (videoRef.current) {
-                    videoRef.current.srcObject = evt.streams[0];
-                }
-            } else {
-                if (audioRef.current) {
-                    audioRef.current.srcObject = evt.streams[0];
-                }
-            }
-        });
-
-        pc.addTransceiver('video', { direction: 'recvonly' });
-        pc.addTransceiver('audio', { direction: 'recvonly' });
-
-        try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-
-            await new Promise<void>((resolve) => {
-                if (pc.iceGatheringState === 'complete') {
-                    resolve();
-                } else {
-                    const checkState = () => {
-                        if (pc.iceGatheringState === 'complete') {
-                            pc.removeEventListener('icegatheringstatechange', checkState);
-                            resolve();
-                        }
-                    };
-                    pc.addEventListener('icegatheringstatechange', checkState);
-                }
-            });
-
-            const answer = await negotiateOffer({
-                sdp: pc.localDescription?.sdp,
-                type: pc.localDescription?.type,
-            });
-
-            setSessionId(answer.sessionid);
-            await pc.setRemoteDescription(answer);
-            setIsStarted(true);
-            setIsLoading(false);
-
-        } catch (e) {
-            console.error(e);
-            message.error('连接失败: ' + e);
-            // 连接失败时关闭摄像头
-            if (localStreamRef.current) {
-                localStreamRef.current.getTracks().forEach(track => track.stop());
-                localStreamRef.current = null;
-            }
-            setIsCameraOn(false);
-            setIsLoading(false);
-        }
-    };
-
-    const stop = () => {
-        if (pcRef.current) {
-            pcRef.current.close();
-            pcRef.current = null;
-        }
-        // 关闭本地摄像头
-        if (localStreamRef.current) {
-            localStreamRef.current.getTracks().forEach(track => track.stop());
-            localStreamRef.current = null;
-        }
-        setIsCameraOn(false);
-        setIsStarted(false);
-    };
-
-    const handleSendMessage = async (text: string) => {
-        resetTimer();
-        setChatHistory(prev => [...prev, {
-            role: 'user',
-            content: text,
-            timestamp: Date.now()
-        }]);
-
-        try {
-            await sendHumanMessage(text, sessionId);
-        } catch (e) {
-            console.error(e);
-            message.error('发送失败');
-        }
-    };
-
-    const toggleSpeaker = () => {
-        setIsSpeakerOn(!isSpeakerOn);
-        if (audioRef.current) {
-            audioRef.current.muted = isSpeakerOn;
-        }
-    };
-
-    // 开启/关闭本地摄像头
-    const toggleCamera = async () => {
-        if (isCameraOn) {
-            // 关闭摄像头
-            if (localStreamRef.current) {
-                localStreamRef.current.getTracks().forEach(track => track.stop());
-                localStreamRef.current = null;
-            }
-            if (localVideoRef.current) {
-                localVideoRef.current.srcObject = null;
-            }
-            setIsCameraOn(false);
-        } else {
-            // 开启摄像头
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'user' },
-                    audio: false
-                });
-                localStreamRef.current = stream;
-                if (localVideoRef.current) {
-                    localVideoRef.current.srcObject = stream;
-                }
-                setIsCameraOn(true);
-            } catch (err) {
-                console.error('无法获取摄像头', err);
-                message.error('无法获取摄像头权限');
-            }
-        }
-    };
-
-    useEffect(() => {
-        resetTimer();
-        return () => {
-            if (timerRef.current) clearTimeout(timerRef.current);
-        };
-    }, [isStarted]);
-
-    // 当 isStarted 变为 true 且有本地流时，绑定到 video 元素
-    useEffect(() => {
-        if (isStarted && isCameraOn && localStreamRef.current && localVideoRef.current) {
-            localVideoRef.current.srcObject = localStreamRef.current;
-        }
-    }, [isStarted, isCameraOn]);
-
     useEffect(() => {
         return () => {
             stop();
-            // 清理AI说话定时器
             if (aiSpeakingTimeoutRef.current) {
                 clearTimeout(aiSpeakingTimeoutRef.current);
             }
-        }
+        };
     }, []);
 
     return (
-        <div
-            className="relative w-full h-full bg-[#ededed] overflow-hidden"
-            onMouseMove={resetTimer}
-            onClick={resetTimer}
-        >
+        <div className="relative w-full h-full bg-[#ededed] overflow-hidden">
             {/* 顶部通话时长和状态 */}
             {isStarted && (
                 <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3">
@@ -493,21 +666,71 @@ export default function VideoChat() {
 
             {/* 主视频区域 */}
             <div className="absolute inset-0 z-0">
+                {/* Processing/Idle Animation Overlay - 阶段2新增 */}
+                {isStarted && processingState.stage !== 'idle' && processingState.stage !== 'playing' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30 z-10">
+                        <div className="text-center">
+                            {/* 呼吸动画圆环 */}
+                            <div className="relative w-40 h-40 mx-auto mb-6">
+                                <div className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 opacity-20 animate-pulse"></div>
+                                <div className="absolute inset-2 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 opacity-40 animate-ping" style={{ animationDuration: '2s' }}></div>
+
+                                {/* 机器人头像 */}
+                                <div className="absolute inset-4 rounded-full bg-white flex items-center justify-center shadow-lg">
+                                    <span className="text-7xl">🤖</span>
+                                </div>
+
+                                {/* 思考点动画 */}
+                                <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 flex gap-2">
+                                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                </div>
+                            </div>
+
+                            {/* 状态消息 */}
+                            <div className="text-white text-xl mb-3 font-medium drop-shadow-lg">
+                                {processingState.message || '正在处理中...'}
+                            </div>
+
+                            {/* 进度条 */}
+                            <div className="w-64 mx-auto bg-white bg-opacity-30 rounded-full h-2 overflow-hidden">
+                                <div
+                                    className="h-full bg-gradient-to-r from-blue-400 to-purple-500 transition-all duration-500 ease-out"
+                                    style={{ width: `${processingState.progress}%` }}
+                                ></div>
+                            </div>
+
+                            {/* 阶段指示器 */}
+                            <div className="flex justify-center gap-4 mt-4 text-white text-sm">
+                                <span className={processingState.stage === 'thinking' ? 'opacity-100 font-bold' : 'opacity-50'}>
+                                    💭 思考
+                                </span>
+                                <span className={processingState.stage === 'tts' ? 'opacity-100 font-bold' : 'opacity-50'}>
+                                    🔊 语音
+                                </span>
+                                <span className={processingState.stage === 'generating' ? 'opacity-100 font-bold' : 'opacity-50'}>
+                                    🎬 视频
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {!isStarted && !isLoading && (
                     <div className="absolute inset-0 flex items-center justify-center bg-[#ededed] z-10">
                         <div className="text-center">
                             <div className="w-32 h-32 mx-auto mb-6 rounded-full bg-gray-300 flex items-center justify-center overflow-hidden">
                                 <span className="text-6xl">🤖</span>
                             </div>
-                            <div className="text-xl text-gray-700 mb-2">AI 助手</div>
-                            <div className="text-gray-500 text-sm">等待接听...</div>
+                            <div className="text-xl text-gray-700 mb-2">AI 数字人助手</div>
+                            <div className="text-gray-500 text-sm">阶段3优化版 - 分段视频生成 + 音频优先</div>
                         </div>
                     </div>
                 )}
                 {isLoading && !isStarted && (
                     <div className="absolute inset-0 flex items-center justify-center bg-[#ededed] z-10">
                         <div className="text-center">
-                            {/* Loading 动画 */}
                             <div className="relative w-32 h-32 mx-auto mb-6">
                                 <div className="absolute inset-0 rounded-full border-4 border-gray-200"></div>
                                 <div className="absolute inset-0 rounded-full border-4 border-t-green-500 border-r-transparent border-b-transparent border-l-transparent animate-spin"></div>
@@ -516,7 +739,7 @@ export default function VideoChat() {
                                 </div>
                             </div>
                             <div className="text-xl text-gray-700 mb-2">正在连接中...</div>
-                            <div className="text-gray-500 text-sm">请稍候，正在建立连接</div>
+                            <div className="text-gray-500 text-sm">请稍候，正在建立 WebSocket 连接</div>
                         </div>
                     </div>
                 )}
@@ -524,38 +747,11 @@ export default function VideoChat() {
                     ref={videoRef}
                     autoPlay
                     playsInline
+                    muted={!isSpeakerOn}
                     className="w-full h-full object-cover"
                     style={{ display: isStarted ? 'block' : 'none' }}
                 />
-                <audio ref={audioRef} autoPlay />
             </div>
-
-            {/* 右上角小窗口（本地摄像头画面） */}
-            {isStarted && (
-                <div
-                    className="absolute top-12 right-4 w-24 h-32 bg-gray-800 overflow-hidden shadow-lg z-20 cursor-pointer"
-                    style={{ borderRadius: 8, border: '2px solid white' }}
-                    onClick={toggleCamera}
-                >
-                    <video
-                        ref={localVideoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="w-full h-full object-cover"
-                        style={{
-                            transform: 'scaleX(-1)',
-                            display: isCameraOn ? 'block' : 'none'
-                        }}
-                    />
-                    {!isCameraOn && (
-                        <div className="w-full h-full flex flex-col items-center justify-center bg-gray-700">
-                            <span className="text-2xl mb-1">📷</span>
-                            <span className="text-white text-xs">点击开启</span>
-                        </div>
-                    )}
-                </div>
-            )}
 
             {/* 底部控制区域 */}
             <div className="absolute bottom-0 left-0 right-0 z-20 pb-8">
@@ -727,8 +923,6 @@ export default function VideoChat() {
                     />
                 </div>
             </div>
-
-            <input type="hidden" id="sessionid" value={sessionId} readOnly />
 
             {/* 设置面板 */}
             <Settings

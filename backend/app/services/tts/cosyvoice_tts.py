@@ -1,9 +1,12 @@
 """
 CosyVoice TTS 实现
+
+支持两种模式：
+1. 进程内模式（默认）：直接加载模型到后端进程
+2. Docker 服务模式：通过 HTTP 调用独立的 CosyVoice 服务
+
 阿里开源的高质量语音合成服务
 GitHub: https://github.com/FunAudioLLM/CosyVoice
-
-使用 Cross-lingual 模式，支持参考音频声音克隆
 """
 import asyncio
 import sys
@@ -31,8 +34,196 @@ except ImportError as e:
     else:
         logger.warning(f"[CosyVoice] ⚠️  未安装，将回退到 Edge TTS: {e}")
 
+import aiohttp
+import base64
+import io
+import soundfile as sf
+
 from app.services.tts.base import BaseTTS
 from app.services.tts.edge_tts import EdgeTTSEngine
+
+
+class CosyVoiceHTTPEngine(BaseTTS):
+    """
+    CosyVoice TTS HTTP 客户端（Docker 服务模式）
+
+    通过 HTTP 调用独立的 CosyVoice SFT Docker 服务
+    服务地址：http://localhost:8003
+    """
+
+    def __init__(
+        self,
+        service_url: str = "http://localhost:8003",
+        voice_name: str = "中文女",
+        timeout: float = 30.0
+    ):
+        """
+        初始化 CosyVoice HTTP 客户端
+
+        Args:
+            service_url: CosyVoice Docker 服务地址
+            voice_name: 音色名称
+            timeout: 请求超时时间
+        """
+        super().__init__()
+        self.service_url = service_url.rstrip('/')
+        self.voice_name = voice_name
+        self.timeout = timeout
+        self.session = None
+
+    async def _ensure_session(self):
+        """确保 aiohttp 会话存在"""
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+
+    async def _check_health(self) -> bool:
+        """检查服务健康状态"""
+        try:
+            await self._ensure_session()
+            async with self.session.get(f"{self.service_url}/health") as resp:
+                return resp.status == 200
+        except Exception as e:
+            logger.warning(f"[CosyVoice HTTP] 健康检查失败: {e}")
+            return False
+
+    async def get_speakers(self) -> list:
+        """获取可用音色列表"""
+        try:
+            await self._ensure_session()
+            async with self.session.get(f"{self.service_url}/speakers") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("speakers", [])
+                return []
+        except Exception as e:
+            logger.error(f"[CosyVoice HTTP] 获取音色列表失败: {e}")
+            return []
+
+    async def synthesize(self, text: str) -> np.ndarray:
+        """
+        合成语音（HTTP 模式）
+
+        Args:
+            text: 要合成的文本
+
+        Returns:
+            np.ndarray: 音频数据 (16kHz, float32)
+        """
+        try:
+            await self._ensure_session()
+
+            logger.debug(f"[CosyVoice HTTP] 合成: {text[:50]}... (音色: {self.voice_name})")
+
+            # 调用 Docker 服务的 TTS 端点
+            async with self.session.post(
+                f"{self.service_url}/tts",
+                json={"text": text, "speaker": self.voice_name},
+                headers={"Content-Type": "application/json"}
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"[CosyVoice HTTP] 请求失败: {resp.status} - {error_text}")
+                    # 回退到 Edge TTS
+                    fallback = EdgeTTSEngine()
+                    return await fallback.synthesize(text)
+
+                # 接收音频数据（WAV 格式）
+                audio_data = await resp.read()
+
+                # 解码 WAV
+                audio_buffer = io.BytesIO(audio_data)
+                audio, sr = sf.read(audio_buffer)
+
+                # 确保是 float32
+                if audio.dtype != np.float32:
+                    audio = audio.astype(np.float32)
+
+                # 重采样到 16kHz（如果需要）
+                if sr != 16000:
+                    import librosa
+                    audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+
+                duration = len(audio) / 16000
+                logger.debug(f"[CosyVoice HTTP] 合成完成: {duration:.2f}秒")
+
+                return audio
+
+        except asyncio.TimeoutError:
+            logger.error("[CosyVoice HTTP] 请求超时")
+            fallback = EdgeTTSEngine()
+            return await fallback.synthesize(text)
+        except Exception as e:
+            logger.error(f"[CosyVoice HTTP] 合成失败: {e}")
+            fallback = EdgeTTSEngine()
+            return await fallback.synthesize(text)
+
+    async def synthesize_stream(self, text: str, chunk_size_ms: int = 150):
+        """
+        流式合成语音（HTTP 模式）
+
+        Args:
+            text: 要合成的文本
+            chunk_size_ms: 切片大小（毫秒）
+
+        Yields:
+            np.ndarray: 音频块 (16kHz, float32)
+        """
+        try:
+            await self._ensure_session()
+
+            logger.debug(f"[CosyVoice HTTP] 流式合成: {text[:50]}...")
+
+            async with self.session.post(
+                f"{self.service_url}/tts/stream",
+                json={"text": text, "speaker": self.voice_name, "chunk_size_ms": chunk_size_ms},
+                headers={"Content-Type": "application/json"}
+            ) as resp:
+                if resp.status != 200:
+                    # 流式失败，回退到非流式
+                    audio = await self.synthesize(text)
+                    yield audio
+                    return
+
+                # 流式接收音频块
+                async for chunk in resp.content.iter_chunked(8192):
+                    if chunk:
+                        # 解码 WAV 块
+                        try:
+                            audio_buffer = io.BytesIO(chunk)
+                            audio, sr = sf.read(audio_buffer)
+
+                            if audio.dtype != np.float32:
+                                audio = audio.astype(np.float32)
+
+                            if sr != 16000:
+                                import librosa
+                                audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+
+                            yield audio
+                        except Exception as e:
+                            logger.warning(f"[CosyVoice HTTP] 解码块失败: {e}")
+
+        except Exception as e:
+            logger.error(f"[CosyVoice HTTP] 流式合成失败: {e}")
+            # 回退到非流式
+            audio = await self.synthesize(text)
+            yield audio
+
+    def is_available(self) -> bool:
+        """检查服务是否可用"""
+        # 异步方法，这里返回 True，实际使用时会检查
+        return True
+
+    def get_voice_name(self) -> str:
+        """获取当前使用的音色名称"""
+        return self.voice_name
+
+    async def close(self):
+        """关闭会话"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+            logger.info("[CosyVoice HTTP] 会话已关闭")
 
 
 class CosyVoiceEngine(BaseTTS):

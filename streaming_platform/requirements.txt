@@ -1,0 +1,34 @@
+# 全链路异步流式 WebRTC 架构依赖
+
+# Web 框架
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+websockets>=13.0
+pydantic>=2.0.0
+
+# WebRTC
+aiortc>=1.6.0
+
+# 音频处理
+numpy>=1.24.0
+soundfile>=0.12.0
+librosa>=0.10.0
+
+# 视频处理
+opencv-python>=4.8.0
+pillow>=10.0.0
+av>=10.0.0
+
+# 深度学习
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.30.0
+
+# 异步支持
+aiofiles>=23.0.0
+
+# 日志
+loguru>=0.7.0
+
+# 工具
+python-multipart>=0.0.12

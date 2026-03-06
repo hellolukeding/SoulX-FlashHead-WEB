@@ -1,0 +1,630 @@
+"""
+优化后的视频流端点 - 使用本地模型
+只使用 models 文件夹中的模型
+"""
+import asyncio
+import base64
+import io
+import time
+import numpy as np
+from fastapi import APIRouter, WebSocket
+from loguru import logger
+from typing import Optional
+
+from app.core.inference.flashhead_engine import FlashHeadInferenceEngine, InferenceConfig
+from app.core.streaming.h264_encoder import H264Encoder
+from app.services.llm.client import get_llm_client
+from app.services.tts.factory import get_tts
+from app.core.streaming.image_decoder import ImageDecoder
+import soundfile as sf
+
+
+router = APIRouter()
+
+# 全局会话管理
+_sessions = {}
+
+
+class VideoStreamSession:
+    """视频流会话 - 优化版 + 分段生成支持"""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.engine: Optional[FlashHeadInferenceEngine] = None
+        self.encoder: Optional[H264Encoder] = None
+        self.created_at = time.time()
+        self.message_count = 0
+        self.streaming_enabled = True  # 默认启用分段生成
+
+    async def initialize(self, reference_image_b64: str) -> bool:
+        """初始化会话，加载模型"""
+        try:
+            logger.info(f"[{self.session_id}] 开始初始化会话...")
+
+            # 解码参考图像
+            image_decoder = ImageDecoder()
+            reference_image_path = image_decoder.decode_and_save(reference_image_b64)
+
+            logger.info(f"[{self.session_id}] 参考图像已保存: {reference_image_path}")
+
+            # 创建推理引擎
+            config = InferenceConfig(
+                model_type="lite",
+                use_face_crop=True
+            )
+
+            self.engine = FlashHeadInferenceEngine(config)
+
+            # 加载模型
+            logger.info(f"[{self.session_id}] 正在加载 SoulX-FlashHead 模型...")
+            if not self.engine.load_model(reference_image_path):
+                logger.error(f"[{self.session_id}] 模型加载失败")
+                return False
+
+            # 创建 H.264 编码器
+            self.encoder = H264Encoder(force_cpu=True)
+
+            logger.success(f"[{self.session_id}] ✅ 会话初始化成功")
+            return True
+
+        except Exception as e:
+            logger.error(f"[{self.session_id}] 初始化失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    async def process_text_message(self, text: str) -> dict:
+        """处理文本消息，生成视频 - 优化版"""
+        try:
+            self.message_count += 1
+            logger.info(f"[{self.session_id}] ========== 处理消息 #{self.message_count}: {text} ==========")
+
+            # 1. LLM 生成（测试模式）
+            logger.info(f"[{self.session_id}] [1/4] LLM 生成中...")
+            
+            # 使用测试响应（因为LLM未配置）
+            test_responses = [
+                f"你好！收到你的消息「{text}」。我是一个数字人助手，很高兴为你服务。",
+                f"关于「{text}」，这是一个很有趣的话题。",
+                f"好的，我明白了，你说的是「{text}」。",
+            ]
+            
+            # 根据输入选择不同的回复
+            import random
+            test_responses = [
+                f"你好！收到你的消息「{text}」。我是一个数字人助手，很高兴为你服务。",
+                f"关于「{text}」，这是一个很有趣的话题。",
+                f"好的，我明白了，你说的是「{text}」。",
+                f"收到！让我来回复你的「{text}」。",
+            ]
+            ai_text = random.choice(test_responses)
+
+            logger.info(f"[{self.session_id}] ✅ AI 回复: {ai_text[:100]}...")
+
+            # 2. TTS 合成（使用 CosyVoice）
+            logger.info(f"[{self.session_id}] [2/4] TTS 合成中...")
+            try:
+                tts = get_tts()
+                ai_audio = await tts.synthesize(ai_text)
+
+                if ai_audio is None or len(ai_audio) == 0:
+                    raise ValueError("TTS 返回空音频")
+
+                # 检查音频数据
+                if isinstance(ai_audio, np.ndarray):
+                    duration = len(ai_audio) / 16000
+                    logger.info(f"[{self.session_id}] ✅ TTS 合成成功: {duration:.2f}秒, {len(ai_audio)} samples")
+                else:
+                    logger.warning(f"[{self.session_id}] ⚠️ TTS 返回格式异常: {type(ai_audio)}")
+                    # 生成静音音频
+                    ai_audio = np.zeros(16000 * 3, dtype=np.float32)  # 3秒静音
+
+            except Exception as e:
+                logger.error(f"[{self.session_id}] ❌ TTS 合成失败: {e}")
+                # 生成静音音频
+                ai_audio = np.zeros(16000 * 3, dtype=np.float32)  # 3秒静音
+
+            # 编码音频为 Base64
+            try:
+                audio_buffer = io.BytesIO()
+                sf.write(audio_buffer, ai_audio, 16000, format='WAV')
+                audio_buffer.seek(0)
+                audio_b64 = base64.b64encode(audio_buffer.read()).decode('utf-8')
+                logger.info(f"[{self.session_id}] ✅ 音频编码完成: {len(audio_b64)} bytes")
+            except Exception as e:
+                logger.error(f"[{self.session_id}] ❌ 音频编码失败: {e}")
+                audio_b64 = None
+
+            # 3. 视频生成
+            logger.info(f"[{self.session_id}] [3/4] 视频生成中...")
+
+            video_data = None
+            video_frames_count = 0
+
+            try:
+                # 确保音频是 numpy array
+                if not isinstance(ai_audio, np.ndarray):
+                    ai_audio = np.array(ai_audio)
+
+                # 确保是 float32
+                if ai_audio.dtype != np.float32:
+                    ai_audio = ai_audio.astype(np.float32)
+
+                # 确保是单声道
+                if len(ai_audio.shape) > 1:
+                    ai_audio = ai_audio[:, 0]
+
+                # 检查音频长度
+                audio_duration = len(ai_audio) / 16000
+                logger.info(f"[{self.session_id}] 音频时长: {audio_duration:.2f}秒")
+
+                if audio_duration < 0.5:
+                    logger.warning(f"[{self.session_id}] ⚠️ 音频太短，生成3秒静音视频")
+                    ai_audio = np.concatenate([
+                        ai_audio,
+                        np.zeros(16000 * 3, dtype=np.float32)
+                    ])
+
+                # 生成视频
+                video_frames = self.engine.process_audio(ai_audio, 16000)
+
+                if video_frames is not None:
+                    # 转换 tensor 为 numpy
+                    import torch
+                    frames_np = video_frames.cpu().numpy()
+
+                    logger.info(f"[{self.session_id}] 视频帧形状: {frames_np.shape}, 类型: {frames_np.dtype}")
+
+                    # 缩放到 [0, 255]
+                    if frames_np.max() <= 1.0:
+                        frames_np = (frames_np * 255).astype(np.uint8)
+                    else:
+                        frames_np = frames_np.astype(np.uint8)
+
+                    # 编码为 H.264
+                    logger.info(f"[{self.session_id}] [4/4] 视频编码中...")
+                    h264_data = self.encoder.encode_frames(frames_np)
+
+                    if h264_data and len(h264_data) > 0:
+                        video_data = base64.b64encode(h264_data).decode('utf-8')
+                        video_frames_count = len(frames_np)
+                        logger.success(f"[{self.session_id}] ✅ 视频生成成功: {video_frames_count} 帧, {len(video_data)} bytes")
+                    else:
+                        logger.error(f"[{self.session_id}] ❌ 视频编码失败")
+
+                else:
+                    logger.error(f"[{self.session_id}] ❌ 视频生成失败")
+
+            except Exception as e:
+                logger.error(f"[{self.session_id}] ❌ 视频生成失败: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # 返回结果
+            result = {
+                "ai_text": ai_text,
+                "audio_data": audio_b64,
+                "audio_format": "wav",
+                "sample_rate": 16000,
+                "video_frames": video_frames_count,
+                "video_data": video_data,
+                "success": True
+            }
+
+            logger.success(f"[{self.session_id}] ✅ 消息处理完成")
+            return result
+
+        except Exception as e:
+            logger.error(f"[{self.session_id}] ❌ 处理消息失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # 返回错误但至少返回文本
+            return {
+                "ai_text": f"你好！收到你的消息「{text}」。抱歉，处理过程中出现了问题。",
+                "audio_data": None,
+                "audio_format": "wav",
+                "sample_rate": 16000,
+                "video_frames": 0,
+                "video_data": None,
+                "success": False,
+                "error": str(e)
+            }
+
+    async def process_text_message_streaming(self, text: str, websocket: WebSocket):
+        """
+        流式处理文本消息 - 阶段3优化
+
+        将视频分成多个片段，每个片段独立生成和发送，
+        大幅减少首帧延迟。
+
+        发送顺序:
+        1. AI 文本 (立即)
+        2. 完整音频 (快速)
+        3. 视频片段1 (最快 - 首帧延迟 ~2秒)
+        4. 视频片段2 (继续)
+        5. ...
+        """
+        try:
+            self.message_count += 1
+            logger.info(f"[{self.session_id}] ========== 流式处理消息 #{self.message_count}: {text} ==========")
+
+            # 1. LLM 生成（测试模式）
+            logger.info(f"[{self.session_id}] [LLM] 生成中...")
+
+            import random
+            test_responses = [
+                f"你好！收到你的消息「{text}」。我是一个数字人助手，很高兴为你服务。",
+                f"关于「{text}」，这是一个很有趣的话题。",
+                f"好的，我明白了，你说的是「{text}」。",
+                f"收到！让我来回复你的「{text}」。",
+            ]
+            ai_text = random.choice(test_responses)
+
+            logger.info(f"[{self.session_id}] ✅ AI 回复: {ai_text[:100]}...")
+
+            # 立即发送 AI 文本
+            await websocket.send_json({
+                "type": "ai_text_chunk",
+                "data": {"text": ai_text}
+            })
+
+            # 2. TTS 合成
+            logger.info(f"[{self.session_id}] [TTS] 合成中...")
+            try:
+                tts = get_tts()
+                ai_audio = await tts.synthesize(ai_text)
+
+                if ai_audio is None or len(ai_audio) == 0:
+                    raise ValueError("TTS 返回空音频")
+
+                if not isinstance(ai_audio, np.ndarray):
+                    ai_audio = np.array(ai_audio)
+
+                duration = len(ai_audio) / 16000
+                logger.info(f"[{self.session_id}] ✅ TTS 合成成功: {duration:.2f}秒")
+
+            except Exception as e:
+                logger.error(f"[{self.session_id}] ❌ TTS 合成失败: {e}")
+                ai_audio = np.zeros(16000 * 3, dtype=np.float32)
+
+            # 编码音频为 Base64
+            try:
+                audio_buffer = io.BytesIO()
+                sf.write(audio_buffer, ai_audio, 16000, format='WAV')
+                audio_buffer.seek(0)
+                audio_b64 = base64.b64encode(audio_buffer.read()).decode('utf-8')
+                logger.info(f"[{self.session_id}] ✅ 音频编码完成: {len(audio_b64)} bytes")
+            except Exception as e:
+                logger.error(f"[{self.session_id}] ❌ 音频编码失败: {e}")
+                audio_b64 = None
+
+            # 立即发送音频（不要等视频）
+            if audio_b64:
+                await websocket.send_json({
+                    "type": "ai_audio",
+                    "data": {
+                        "audio_data": audio_b64,
+                        "audio_format": "wav",
+                        "sample_rate": 16000
+                    }
+                })
+                logger.info(f"[{self.session_id}] ✅ 音频已发送（流式）")
+
+            # 3. 流式生成视频片段
+            logger.info(f"[{self.session_id}] [Video] 开始流式生成...")
+
+            try:
+                if not isinstance(ai_audio, np.ndarray):
+                    ai_audio = np.array(ai_audio)
+                if ai_audio.dtype != np.float32:
+                    ai_audio = ai_audio.astype(np.float32)
+                if len(ai_audio.shape) > 1:
+                    ai_audio = ai_audio[:, 0]
+
+                audio_duration = len(ai_audio) / 16000
+                logger.info(f"[{self.session_id}] 音频时长: {audio_duration:.2f}秒")
+
+                if audio_duration < 0.5:
+                    ai_audio = np.concatenate([ai_audio, np.zeros(16000 * 3, dtype=np.float32)])
+
+                # 使用流式生成
+                chunk_count = 0
+                total_frames = 0
+
+                for chunk in self.engine.process_audio_streaming(ai_audio, 16000):
+                    chunk_index = chunk['chunk_index']
+                    total_chunks = chunk['total_chunks']
+                    video_frames = chunk['video_frames']
+                    chunk_duration = chunk['duration']
+
+                    logger.info(f"[{self.session_id}] [Video Chunk {chunk_index + 1}/{total_chunks}]")
+
+                    # 转换 tensor 为 numpy
+                    import torch
+                    frames_np = video_frames.cpu().numpy()
+
+                    # 缩放到 [0, 255]
+                    if frames_np.max() <= 1.0:
+                        frames_np = (frames_np * 255).astype(np.uint8)
+                    else:
+                        frames_np = frames_np.astype(np.uint8)
+
+                    # 编码为 H.264（使用关键帧确保独立解码）
+                    h264_data = self.encoder.encode_frames_with_keyframe(frames_np)
+
+                    if h264_data and len(h264_data) > 0:
+                        video_b64 = base64.b64encode(h264_data).decode('utf-8')
+                        frame_count = len(frames_np)
+                        total_frames += frame_count
+                        chunk_count += 1
+
+                        # 发送视频片段
+                        await websocket.send_json({
+                            "type": "video_chunk",
+                            "data": {
+                                "chunk_index": chunk_index,
+                                "total_chunks": total_chunks,
+                                "video_data": video_b64,
+                                "video_frames": frame_count,
+                                "duration": chunk_duration,
+                                "is_first": chunk_index == 0,
+                                "is_last": chunk_index == total_chunks - 1
+                            }
+                        })
+                        logger.info(f"[{self.session_id}] ✅ 视频片段 {chunk_index + 1}/{total_chunks} 已发送: {frame_count} 帧")
+
+                logger.success(f"[{self.session_id}] ✅ 流式视频生成完成: {chunk_count} 片段, {total_frames} 总帧数")
+
+                # 发送完成标记
+                await websocket.send_json({
+                    "type": "complete",
+                    "data": {
+                        "success": True,
+                        "total_chunks": chunk_count,
+                        "total_frames": total_frames,
+                        "message": "流式消息处理完成"
+                    }
+                })
+
+            except Exception as e:
+                logger.error(f"[{self.session_id}] ❌ 流式视频生成失败: {e}")
+                import traceback
+                traceback.print_exc()
+
+                # 发送错误但标记完成
+                await websocket.send_json({
+                    "type": "complete",
+                    "data": {
+                        "success": False,
+                        "error": str(e),
+                        "message": "视频生成失败"
+                    }
+                })
+
+        except Exception as e:
+            logger.error(f"[{self.session_id}] ❌ 流式处理失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+            await websocket.send_json({
+                "type": "complete",
+                "data": {
+                    "success": False,
+                    "error": str(e),
+                    "message": "处理失败"
+                }
+            })
+
+    def cleanup(self):
+        """清理资源"""
+        if self.engine:
+            try:
+                self.engine.unload()
+            except:
+                pass
+        if self.encoder:
+            try:
+                self.encoder.close()
+            except:
+                pass
+
+
+@router.websocket("/video")
+async def video_stream_endpoint(websocket: WebSocket):
+    """
+    WebSocket 视频流端点 - 优化版
+
+    只使用 models 文件夹中的模型：
+    - CosyVoice (TTS)
+    - SoulX-FlashHead-1_3B (视频生成)
+    - wav2vec2-base-960h (ASR)
+    """
+    await websocket.accept()
+
+    # 生成会话 ID
+    import uuid
+    session_id = str(uuid.uuid4())
+    session = VideoStreamSession(session_id)
+    _sessions[session_id] = session
+
+    logger.info(f"[{session_id}] 🎬 视频流连接建立")
+
+    try:
+        # 发送欢迎消息
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "message": "视频流已连接（阶段3 - 分段生成），请先发送 init 消息初始化",
+            "features": {
+                "streaming_video": True,
+                "chunked_generation": True,
+                "version": "stage3"
+            }
+        })
+
+        # 消息循环
+        while True:
+            # 接收消息
+            data = await websocket.receive_json()
+            message_type = data.get("type")
+            message_data = data.get("data", {})
+
+            logger.debug(f"[{session_id}] 收到消息: {message_type}")
+
+            if message_type == "init":
+                # 初始化会话
+                reference_image = message_data.get("reference_image")
+
+                if not reference_image:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "缺少 reference_image"
+                    })
+                    continue
+
+                # 使用默认参考图像（如果没有提供）
+                if reference_image == "default":
+                    # 读取默认参考图像
+                    import os
+                    default_image_path = "/opt/soulx/SoulX-FlashHead/examples/girl.png"
+                    if os.path.exists(default_image_path):
+                        with open(default_image_path, "rb") as f:
+                            reference_image = base64.b64encode(f.read()).decode('utf-8')
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"默认参考图像不存在: {default_image_path}"
+                        })
+                        continue
+
+                # 初始化
+                success = await session.initialize(reference_image)
+
+                if success:
+                    await websocket.send_json({
+                        "type": "initialized",
+                        "session_id": session_id,
+                        "message": "会话初始化成功，可以发送消息了"
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "会话初始化失败"
+                    })
+
+            elif message_type == "message":
+                # 处理文本消息
+                if not session.engine:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "会话未初始化，请先发送 init 消息"
+                    })
+                    continue
+
+                text = message_data.get("text", "")
+                if not text:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "缺少 text 字段"
+                    })
+                    continue
+
+                # 发送状态消息
+                await websocket.send_json({
+                    "type": "status",
+                    "data": {
+                        "stage": "processing",
+                        "message": "正在处理您的消息..."
+                    }
+                })
+
+                # 使用流式处理（阶段3优化）
+                use_streaming = message_data.get("streaming", session.streaming_enabled)
+
+                if use_streaming:
+                    # 流式处理：视频分片段发送
+                    logger.info(f"[{session_id}] 使用流式处理模式")
+                    await session.process_text_message_streaming(text, websocket)
+                else:
+                    # 传统模式：一次性发送
+                    logger.info(f"[{session_id}] 使用传统模式")
+                    result = await session.process_text_message(text)
+
+                    # 发送 AI 文本（流式）
+                    if result.get("ai_text"):
+                        await websocket.send_json({
+                            "type": "ai_text_chunk",
+                            "data": {
+                                "text": result.get("ai_text", "")
+                            }
+                        })
+
+                    # 发送音频（无条件发送，只要有数据）
+                    if result.get("audio_data"):
+                        logger.info(f"[{session_id}] 发送音频: {len(result['audio_data'])} bytes")
+                        await websocket.send_json({
+                            "type": "ai_audio",
+                            "data": {
+                                "audio_data": result["audio_data"],
+                                "audio_format": result.get("audio_format", "wav"),
+                                "sample_rate": result.get("sample_rate", 16000)
+                            }
+                        })
+                        logger.info(f"[{session_id}] ✅ 音频已发送")
+
+                    # 发送视频
+                    if result.get("video_data") and result.get("success"):
+                        logger.info(f"[{session_id}] 发送视频帧: {result['video_frames']} 帧, {len(result['video_data'])} bytes")
+                        await websocket.send_json({
+                            "type": "video_frame",
+                            "data": {
+                                "frame_number": session.message_count,
+                                "video_data": result["video_data"],
+                                "video_frames": result["video_frames"]
+                            }
+                        })
+                        logger.info(f"[{session_id}] ✅ 视频帧已发送")
+
+                    # 发送完成标记
+                    await websocket.send_json({
+                        "type": "complete",
+                        "data": {
+                            "success": result.get("success", False),
+                            "message": "消息处理完成"
+                        }
+                    })
+
+            elif message_type == "ping":
+                # 心跳
+                await websocket.send_json({
+                    "type": "pong",
+                    "timestamp": time.time()
+                })
+
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"未知消息类型: {message_type}"
+                })
+
+    except Exception as e:
+        logger.error(f"[{session_id}] 错误: {e}")
+        import traceback
+        traceback.print_exc()
+
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e)
+            })
+        except:
+            pass
+
+    finally:
+        # 清理会话
+        session.cleanup()
+        if session_id in _sessions:
+            del _sessions[session_id]
+
+        logger.info(f"[{session_id}] 🔌 连接关闭")

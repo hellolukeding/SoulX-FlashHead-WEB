@@ -1,0 +1,40 @@
+# CosyVoice TTS 服务 - Docker Compose 配置
+# 验证状态: ✅ 本地测试通过 (2026-03-06)
+
+services:
+  cosyvoice:
+    image: cosyvoice-tts:latest
+    container_name: cosyvoice-tts
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${COSYVOICE_PORT:-8002}:8002"
+    volumes:
+      # 挂载 CosyVoice 模型代码和预训练模型
+      - ${COSYVOICE_ROOT:-/opt/digital-human-platform/models/CosyVoice}:/models/CosyVoice:ro
+      # 可选：挂载自定义参考音频
+      - ${COSYVOICE_ASSETS:-./assets}:/assets:ro
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - digital-human-network
+
+networks:
+  digital-human-network:
+    external: true

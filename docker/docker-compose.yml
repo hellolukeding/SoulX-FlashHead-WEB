@@ -1,0 +1,167 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # vLLM - CosyVoice LLM 加速服务
+  # ============================================
+  vllm:
+    build:
+      context: ./vllm
+      dockerfile: Dockerfile
+    container_name: digital-human-vllm
+    image: digital-human-vllm:latest
+    runtime: nvidia
+    environment:
+      - MODEL_NAME=deepseek-chat-1.5b
+      - TENSOR_PARALLEL_SIZE=1
+      - GPU_MEMORY_UTILIZATION=0.3
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      - /opt/digital-human-platform/models:/models:ro
+    ports:
+      - "8001:8001"
+    networks:
+      - digital-human-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ============================================
+  # CosyVoice - 流式 TTS 服务
+  # ============================================
+  cosyvoice:
+    build:
+      context: ./cosyvoice
+      dockerfile: Dockerfile
+    container_name: digital-human-cosyvoice
+    image: digital-human-cosyvoice:latest
+    runtime: nvidia
+    environment:
+      - MODEL_PATH=/models/CosyVoice-300M
+      - PORT=8002
+      - CHUNK_SIZE=2400
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      - /opt/digital-human-platform/models:/models:ro
+      - ./cosyvoice/server.py:/app/CosyVoice/server.py:ro
+    ports:
+      - "8002:8002"
+    networks:
+      - digital-human-net
+    depends_on:
+      - vllm
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ============================================
+  # SoulX-FlashHead - 流式视频生成服务
+  # ============================================
+  soulx:
+    build:
+      context: ./soulx
+      dockerfile: Dockerfile
+    container_name: digital-human-soulx
+    image: digital-human-soulx:latest
+    runtime: nvidia
+    environment:
+      - MODEL_PATH=/models/SoulX-FlashHead-1_3B
+      - PORT=8003
+      - FPS=25
+      - USE_SAGE_ATTN=true
+      - NVIDIA_VISIBLE_DEVICES=0
+      - USE_SAGEATTENTION=1
+    volumes:
+      - /opt/digital-human-platform/models:/models:ro
+      - /opt/soulx/SoulX-FlashHead:/opt/soulx/SoulX-FlashHead:ro
+      - ./soulx/soulx_server.py:/app/soulx_server.py:ro
+    ports:
+      - "8003:8003"
+    networks:
+      - digital-human-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ============================================
+  # 主后端服务 - FastAPI + WebRTC
+  # ============================================
+  backend:
+    build:
+      context: ../
+      dockerfile: docker/backend/Dockerfile
+    container_name: digital-human-backend
+    image: digital-human-backend:latest
+    environment:
+      - VLLM_URL=http://vllm:8001
+      - COSYVOICE_URL=http://cosyvoice:8002
+      - SOULX_URL=http://soulx:8003
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ../backend:/app
+      - digital-human-logs:/app/logs
+    ports:
+      - "8000:8000"
+    networks:
+      - digital-human-net
+    depends_on:
+      - vllm
+      - cosyvoice
+      - soulx
+      - redis
+    restart: unless-stopped
+
+  # ============================================
+  # Nginx - 反向代理
+  # ============================================
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: digital-human-nginx
+    image: digital-human-nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - digital-human-net
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ============================================
+  # Redis - 缓存和会话存储
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: digital-human-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - digital-human-net
+    volumes:
+      - digital-human-redis:/data
+    restart: unless-stopped
+
+networks:
+  digital-human-net:
+    driver: bridge
+
+volumes:
+  digital-human-logs:
+  digital-human-redis:

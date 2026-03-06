@@ -73,6 +73,9 @@ class H264Encoder:
         codec_context.height = height
         codec_context.framerate = self.fps
 
+        # 设置像素格式
+        codec_context.pix_fmt = "yuv420p"
+
         # 简化比特率设置
         bitrate_value = int(float(self.bitrate.replace("M", "")) * 1_000_000)
         codec_context.bit_rate = bitrate_value
@@ -130,7 +133,7 @@ class H264Encoder:
         # 合并所有包
         result = b""
         for packet in packets:
-            result += packet.to_bytes()
+            result += bytes(packet)
 
         return result
 
@@ -144,7 +147,7 @@ class H264Encoder:
         Returns:
             拼接的 H.264 数据包
         """
-        if not frames:
+        if len(frames) == 0:
             return b""
 
         self._create_encoder(frames[0].shape[1], frames[0].shape[0])
@@ -156,12 +159,55 @@ class H264Encoder:
             packets = self.encoder.encode(av_frame)
 
             for packet in packets:
-                result += packet.to_bytes()
+                result += bytes(packet)
 
         # 刷新编码器
         packets = self.encoder.encode(None)
         for packet in packets:
-            result += packet.to_bytes()
+            result += bytes(packet)
+
+        return result
+
+    def encode_frames_with_keyframe(self, frames: List[np.ndarray]) -> bytes:
+        """
+        批量编码视频帧，确保第一个帧是关键帧
+
+        用于流式视频生成，确保每个片段可以独立解码。
+
+        Args:
+            frames: RGB 图像列表
+
+        Returns:
+            拼接的 H.264 数据包（首帧为关键帧）
+        """
+        if len(frames) == 0:
+            return b""
+
+        # 强制重新创建编码器以确保首帧是关键帧
+        if self.encoder is not None:
+            self.encoder.close()
+            self.encoder = None
+
+        self._create_encoder(frames[0].shape[1], frames[0].shape[0])
+
+        result = b""
+
+        for i, frame in enumerate(frames):
+            av_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
+
+            # 强制第一帧为关键帧
+            if i == 0:
+                av_frame.pict_type = av.VideoPictureType.I
+
+            packets = self.encoder.encode(av_frame)
+
+            for packet in packets:
+                result += bytes(packet)
+
+        # 刷新编码器
+        packets = self.encoder.encode(None)
+        for packet in packets:
+            result += bytes(packet)
 
         return result
 

@@ -7,6 +7,7 @@ const { Text } = Typography;
 const LOCAL_STORAGE_KEY = 'livetalking_config';
 
 interface ServiceConfig {
+    backend_url: string;
     tts_type: string;
     asr_type: string;
     llm_model: string;
@@ -59,6 +60,7 @@ export default function Settings({ visible, onClose }: SettingsProps) {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [config, setConfig] = useState<ServiceConfig>({
+        backend_url: 'ws://192.168.1.132:8000',
         tts_type: 'edge',
         asr_type: 'lip',
         llm_model: 'gpt-3.5-turbo',
@@ -135,7 +137,7 @@ export default function Settings({ visible, onClose }: SettingsProps) {
                 </Space>
             }
             placement="right"
-            size={{ width: 480 }}
+            size="large"
             open={visible}
             onClose={onClose}
             footer={
@@ -187,6 +189,25 @@ export default function Settings({ visible, onClose }: SettingsProps) {
                         tooltip="调整语音音量（0 - 1）"
                     >
                         <Slider min={0} max={1} step={0.1} marks={{ 0: '静音', 1: '最大' }} />
+                    </Form.Item>
+                </Card>
+
+                {/* 后端配置 */}
+                <Card title="后端连接" size="small" className="mb-4">
+                    <Form.Item
+                        label="WebSocket URL"
+                        name="backend_url"
+                        tooltip="后端 WebSocket 服务器地址"
+                    >
+                        <Input placeholder="ws://192.168.1.132:8000" />
+                    </Form.Item>
+                    <Form.Item
+                        label="调试模式"
+                        name="debug_mode"
+                        tooltip="启用详细日志输出"
+                        valuePropName="checked"
+                    >
+                        <Switch />
                     </Form.Item>
                 </Card>
 

@@ -204,6 +204,92 @@ class FlashHeadInferenceEngine:
             logger.error(f"音频文件处理失败: {e}")
             return None
 
+    def process_audio_streaming(
+        self,
+        audio_data: np.ndarray,
+        sample_rate: int = 16000,
+        chunk_duration: float = 1.32
+    ):
+        """
+        流式处理音频并生成视频帧（分段生成）
+
+        将长音频分成多个片段，每个片段生成独立的视频。
+        这样可以更快地返回第一帧视频。
+
+        Args:
+            audio_data: 音频数据 (numpy array, shape: [samples])
+            sample_rate: 采样率
+            chunk_duration: 每段视频的时长（秒），默认 1.32秒（33帧）
+
+        Yields:
+            dict: {
+                'chunk_index': int,
+                'total_chunks': int,
+                'video_frames': torch.Tensor,
+                'audio_chunk': np.ndarray,
+                'duration': float
+            }
+        """
+        if not self.is_loaded:
+            logger.error("模型未加载，请先调用 load_model()")
+            return
+
+        try:
+            # 重采样音频到 16kHz
+            if sample_rate != self.config.audio_sample_rate:
+                audio_data = librosa.resample(
+                    audio_data,
+                    orig_sr=sample_rate,
+                    target_sr=self.config.audio_sample_rate
+                )
+
+            FRAME_NUM = 33
+            TARGET_AUDIO_SAMPLES = FRAME_NUM * 16000 // 25  # 21120 samples (1.32秒)
+
+            total_samples = len(audio_data)
+            chunk_count = int(np.ceil(total_samples / TARGET_AUDIO_SAMPLES))
+
+            logger.info(f"[FlashHead Streaming] 总音频: {total_samples} samples ({total_samples/16000:.2f}秒)")
+            logger.info(f"[FlashHead Streaming] 将生成 {chunk_count} 个视频片段")
+
+            # 分段处理
+            for i in range(chunk_count):
+                start_idx = i * TARGET_AUDIO_SAMPLES
+                end_idx = min(start_idx + TARGET_AUDIO_SAMPLES, total_samples)
+                audio_chunk = audio_data[start_idx:end_idx]
+
+                # 如果是最后一段且不足 TARGET_AUDIO_SAMPLES，填充
+                if len(audio_chunk) < TARGET_AUDIO_SAMPLES:
+                    padding_needed = TARGET_AUDIO_SAMPLES - len(audio_chunk)
+                    audio_chunk = np.concatenate([
+                        audio_chunk,
+                        np.zeros(padding_needed, dtype=np.float32)
+                    ])
+                    logger.info(f"[FlashHead Streaming] 最后一段填充: {padding_needed} samples")
+
+                logger.info(f"[FlashHead Streaming] 处理片段 {i+1}/{chunk_count}: {len(audio_chunk)} samples")
+
+                # 获取音频嵌入
+                audio_embedding = get_audio_embedding(self.pipeline, audio_chunk)
+
+                # 生成视频帧
+                video_frames = run_pipeline(self.pipeline, audio_embedding)
+
+                if video_frames is not None:
+                    yield {
+                        'chunk_index': i,
+                        'total_chunks': chunk_count,
+                        'video_frames': video_frames,
+                        'audio_chunk': audio_chunk,
+                        'duration': len(audio_chunk) / 16000
+                    }
+                else:
+                    logger.warning(f"[FlashHead Streaming] 片段 {i+1} 生成失败")
+
+        except Exception as e:
+            logger.error(f"[FlashHead Streaming] 流式音频处理失败: {e}")
+            raise
+
     def change_person(self, reference_image: str) -> bool:
         """
         切换参考人物

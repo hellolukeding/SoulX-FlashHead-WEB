@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # CosyVoice 流式 TTS 服务
+  cosyvoice:
+    build:
+      context: ./vllm-cosyvoice
+      dockerfile: Dockerfile
+    container_name: cosyvoice-tts
+    image: cosyvoice-tts:latest
+    runtime: nvidia
+    environment:
+      - MODEL_PATH=/models/CosyVoice-300M
+      - PORT=8002
+      - HOST=0.0.0.0
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      # 挂载模型目录（只读）
+      - /opt/digital-human-platform/models/CosyVoice:/models/CosyVoice-300M:ro
+      # 挂载 CosyVoice 代码（如果需要自定义）
+      - /opt/digital-human-platform/models/CosyVoice:/app/CosyVoice:ro
+    ports:
+      - "8002:8002"
+    networks:
+      - cosyvoice-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  cosyvoice-net:
+    driver: bridge

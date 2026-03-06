@@ -1,0 +1,41 @@
+# CosyVoice TTS 服务 - 使用本地模型
+# 不需要下载 PyTorch，直接使用主机 GPU
+
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    NVIDIA_VISIBLE_DEVICES=all
+
+# 只安装 Python 和基本依赖
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir \
+    fastapi \
+    uvicorn \
+    websockets \
+    pydantic \
+    pyyaml \
+    aiofiles \
+    numpy \
+    soundfile
+
+# 挂载本地 CosyVoice 和 PyTorch
+VOLUME ["/app/CosyVoice"]
+VOLUME ["/usr/local/lib/python3.10/site-packages"]
+
+WORKDIR /app
+
+# 复制服务文件
+COPY cosyvoice_server.py /app/
+COPY start.sh /app/
+RUN chmod +x /app/start.sh
+
+EXPOSE 8002
+
+# 启动时使用本地 PyTorch 和 CosyVoice
+CMD ["/app/start.sh"]

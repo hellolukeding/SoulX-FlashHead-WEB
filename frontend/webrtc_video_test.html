@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SoulX-FlashHead WebRTC 实时视频流测试</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2rem;
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+            font-size: 0.9rem;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+
+        .video-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 1 / 1;
+        }
+
+        #remoteVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .video-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+
+        .status-dot.connected {
+            background: #44ff44;
+        }
+
+        .status-dot.processing {
+            background: #ffaa00;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .controls-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .status-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .status-card h3 {
+            font-size: 0.9rem;
+            color: #888;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-item:last-child {
+            border-bottom: none;
+        }
+
+        .status-label {
+            color: #aaa;
+            font-size: 0.85rem;
+        }
+
+        .status-value {
+            color: #00d4ff;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        .input-group label {
+            display: block;
+            color: #aaa;
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+        }
+
+        textarea {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 10px;
+            color: #eee;
+            font-size: 0.9rem;
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff, #0099cc);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.3);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #eee;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .response-panel {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .response-item {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            font-size: 0.85rem;
+        }
+
+        .response-item:last-child {
+            border-bottom: none;
+        }
+
+        .response-type {
+            color: #888;
+            margin-right: 10px;
+        }
+
+        .response-text {
+            color: #eee;
+        }
+
+        .log-panel {
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+        }
+
+        .log-item {
+            padding: 3px 0;
+            color: #888;
+        }
+
+        .log-item.info {
+            color: #00d4ff;
+        }
+
+        .log-item.success {
+            color: #44ff44;
+        }
+
+        .log-item.error {
+            color: #ff4444;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            background: rgba(255, 255, 255, 0.1);
+            margin-left: 10px;
+        }
+
+        .badge.webrtc {
+            background: linear-gradient(135deg, #7b2cbf, #9d4edd);
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SoulX-FlashHead WebRTC 实时视频流</h1>
+        <p class="subtitle">基于 SoulX-FlashHead 的数字人实时视频生成系统 <span class="badge webrtc">WebRTC</span></p>
+
+        <div class="main-content">
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="remoteVideo" autoplay playsinline></video>
+                    <div class="video-overlay">
+                        <div class="status-dot" id="statusDot"></div>
+                        <span id="statusText">未连接</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="controls-section">
+                <div class="status-card">
+                    <h3>连接状态</h3>
+                    <div class="status-item">
+                        <span class="status-label">WebSocket</span>
+                        <span class="status-value" id="wsStatus">未连接</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">WebRTC</span>
+                        <span class="status-value" id="rtcStatus">未连接</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">会话 ID</span>
+                        <span class="status-value" id="sessionId">-</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">消息计数</span>
+                        <span class="status-value" id="messageCount">0</span>
+                    </div>
+                </div>
+
+                <div class="input-group">
+                    <label>输入消息</label>
+                    <textarea id="messageInput" placeholder="输入要发送的消息...">你好，请介绍一下自己</textarea>
+                </div>
+
+                <div class="button-group">
+                    <button class="btn-primary" id="connectBtn" onclick="connect()">连接</button>
+                    <button class="btn-secondary" id="sendBtn" onclick="sendMessage()" disabled>发送</button>
+                </div>
+
+                <div class="response-panel" id="responsePanel">
+                    <div class="response-item" style="color: #888;">AI 回复将显示在这里...</div>
+                </div>
+
+                <div class="log-panel" id="logPanel">
+                    <div class="log-item">日志将显示在这里...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 配置
+        const WS_URL = 'ws://192.168.1.132:8000/api/v1/webrtc/video';
+
+        // 状态
+        let ws = null;
+        let pc = null;
+        let sessionId = null;
+        let messageCount = 0;
+        let isConnected = false;
+        let isRtcConnected = false;
+
+        // DOM 元素
+        const remoteVideo = document.getElementById('remoteVideo');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const wsStatus = document.getElementById('wsStatus');
+        const rtcStatus = document.getElementById('rtcStatus');
+        const sessionIdEl = document.getElementById('sessionId');
+        const messageCountEl = document.getElementById('messageCount');
+        const connectBtn = document.getElementById('connectBtn');
+        const sendBtn = document.getElementById('sendBtn');
+        const messageInput = document.getElementById('messageInput');
+        const responsePanel = document.getElementById('responsePanel');
+        const logPanel = document.getElementById('logPanel');
+
+        // 日志函数
+        function log(message, type = 'info') {
+            const item = document.createElement('div');
+            item.className = `log-item ${type}`;
+            item.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logPanel.appendChild(item);
+            logPanel.scrollTop = logPanel.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        // 更新状态
+        function updateStatus() {
+            if (isRtcConnected) {
+                statusDot.className = 'status-dot connected';
+                statusText.textContent = '已连接';
+                wsStatus.textContent = '已连接';
+                rtcStatus.textContent = '已连接';
+                wsStatus.style.color = '#44ff44';
+                rtcStatus.style.color = '#44ff44';
+            } else if (isConnected) {
+                statusDot.className = 'status-dot processing';
+                statusText.textContent = '连接中...';
+                wsStatus.textContent = '已连接';
+                rtcStatus.textContent = '连接中...';
+                wsStatus.style.color = '#44ff44';
+                rtcStatus.style.color = '#ffaa00';
+            } else {
+                statusDot.className = 'status-dot';
+                statusText.textContent = '未连接';
+                wsStatus.textContent = '未连接';
+                rtcStatus.textContent = '未连接';
+                wsStatus.style.color = '#888';
+                rtcStatus.style.color = '#888';
+            }
+        }
+
+        // 添加响应
+        function addResponse(type, text) {
+            const item = document.createElement('div');
+            item.className = 'response-item';
+            item.innerHTML = `<span class="response-type">[${type}]</span><span class="response-text">${text}</span>`;
+            responsePanel.appendChild(item);
+            responsePanel.scrollTop = responsePanel.scrollHeight;
+        }
+
+        // WebSocket 连接
+        function connect() {
+            if (isConnected) {
+                disconnect();
+                return;
+            }
+
+            log(`连接到 ${WS_URL}...`);
+            connectBtn.textContent = '连接中...';
+            connectBtn.disabled = true;
+
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                log('WebSocket 连接成功', 'success');
+                isConnected = true;
+                connectBtn.textContent = '断开';
+                connectBtn.classList.remove('btn-primary');
+                connectBtn.classList.add('btn-secondary');
+                connectBtn.disabled = false;
+                updateStatus();
+
+                // 初始化会话
+                sendInit();
+            };
+
+            ws.onmessage = async (event) => {
+                const data = JSON.parse(event.data);
+                log(`收到消息: ${data.type}`, 'info');
+                handleServerMessage(data);
+            };
+
+            ws.onerror = (error) => {
+                log('WebSocket 错误', 'error');
+                console.error(error);
+            };
+
+            ws.onclose = () => {
+                log('WebSocket 连接关闭', 'error');
+                isConnected = false;
+                isRtcConnected = false;
+                connectBtn.textContent = '连接';
+                connectBtn.classList.add('btn-primary');
+                connectBtn.classList.remove('btn-secondary');
+                sendBtn.disabled = true;
+                updateStatus();
+            };
+        }
+
+        // 断开连接
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+        }
+
+        // 发送初始化消息
+        function sendInit() {
+            ws.send(JSON.stringify({
+                type: 'init',
+                data: {
+                    reference_image: 'default'
+                }
+            }));
+            log('发送 init 消息');
+        }
+
+        // 处理服务器消息
+        async function handleServerMessage(data) {
+            switch (data.type) {
+                case 'connected':
+                    sessionId = data.session_id;
+                    sessionIdEl.textContent = sessionId.substring(0, 8) + '...';
+                    log(`会话 ID: ${sessionId}`, 'success');
+                    break;
+
+                case 'initialized':
+                    log('会话初始化成功，创建 WebRTC 连接...', 'success');
+                    await createWebRTCOffer();
+                    break;
+
+                case 'answer':
+                    log('收到 WebRTC Answer', 'info');
+                    await handleWebRTCAnswer(data.data);
+                    break;
+
+                case 'ai_text':
+                    log(`收到 AI 文本: ${data.data.text.substring(0, 50)}...`, 'success');
+                    addResponse('AI', data.data.text);
+                    break;
+
+                case 'audio':
+                    log(`收到音频数据: ${data.data.audio_data.length} bytes`, 'success');
+                    playAudio(data.data.audio_data);
+                    break;
+
+                case 'complete':
+                    log('消息处理完成', 'success');
+                    statusDot.className = 'status-dot connected';
+                    sendBtn.disabled = false;
+                    break;
+
+                case 'error':
+                    log(`错误: ${data.message}`, 'error');
+                    addResponse('错误', data.message);
+                    break;
+
+                default:
+                    log(`未知消息类型: ${data.type}`, 'info');
+            }
+        }
+
+        // 创建 WebRTC Offer
+        async function createWebRTCOffer() {
+            log('创建 WebRTC PeerConnection...', 'info');
+
+            pc = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+            // 监听 ICE candidate
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    log('发送 ICE candidate', 'info');
+                    ws.send(JSON.stringify({
+                        type: 'ice_candidate',
+                        data: {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex
+                        }
+                    }));
+                }
+            };
+
+            // 监听远程流
+            pc.ontrack = (event) => {
+                log('收到远程视频流', 'success');
+                remoteVideo.srcObject = event.streams[0];
+                isRtcConnected = true;
+                updateStatus();
+                sendBtn.disabled = false;
+            };
+
+            // 监听连接状态
+            pc.onconnectionstatechange = () => {
+                log(`WebRTC 连接状态: ${pc.connectionState}`, 'info');
+                if (pc.connectionState === 'connected') {
+                    isRtcConnected = true;
+                    updateStatus();
+                } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                    isRtcConnected = false;
+                    updateStatus();
+                }
+            };
+
+            // 创建 Offer
+            const offer = await pc.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+            });
+
+            await pc.setLocalDescription(offer);
+
+            // 发送 Offer
+            log('发送 WebRTC Offer', 'info');
+            ws.send(JSON.stringify({
+                type: 'offer',
+                data: {
+                    sdp: offer.sdp,
+                    type: offer.type
+                }
+            }));
+        }
+
+        // 处理 WebRTC Answer
+        async function handleWebRTCAnswer(data) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data));
+            log('WebRTC 连接建立', 'success');
+        }
+
+        // 发送消息
+        function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text) return;
+
+            messageCount++;
+            messageCountEl.textContent = messageCount;
+
+            log(`发送消息: ${text.substring(0, 50)}...`);
+            addResponse('用户', text);
+
+            ws.send(JSON.stringify({
+                type: 'message',
+                data: { text }
+            }));
+
+            statusDot.className = 'status-dot processing';
+            sendBtn.disabled = true;
+        }
+
+        // 播放音频
+        function playAudio(base64Audio) {
+            try {
+                const binaryString = atob(base64Audio);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                const blob = new Blob([bytes], { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = new Audio(audioUrl);
+                audio.play();
+
+                log('播放 TTS 音频', 'success');
+            } catch (e) {
+                log(`播放音频失败: ${e.message}`, 'error');
+            }
+        }
+
+        // 键盘快捷键
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (isRtcConnected) {
+                    sendMessage();
+                }
+            }
+        });
+
+        // 页面卸载
+        window.addEventListener('beforeunload', () => {
+            disconnect();
+        });
+
+        // 初始化
+        log('页面加载完成，点击连接按钮开始');
+    </script>
+</body>
+</html>

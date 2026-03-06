@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数字人视频流测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 16/9;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .controls {
+            margin-top: 20px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 8px;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        input, button {
+            padding: 10px 15px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background: #333;
+            color: #fff;
+        }
+        button {
+            background: #0066cc;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0055aa;
+        }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+        }
+        .logs {
+            margin-top: 20px;
+            padding: 15px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>数字人视频流测试</h1>
+        
+        <div class="controls">
+            <div class="input-group">
+                <input type="text" id="messageInput" placeholder="输入消息..." value="你好">
+                <button onclick="sendMessage()">发送消息</button>
+            </div>
+            
+            <div class="input-group">
+                <button onclick="startWebSocket()">连接 WebSocket</button>
+                <button onclick="stopWebSocket()">断开连接</button>
+            </div>
+            
+            <div class="status">
+                <div>状态: <span id="status">未连接</span></div>
+                <div>接收帧数: <span id="frameCount">0</span></div>
+            </div>
+        </div>
+
+        <div class="video-container">
+            <video id="videoPlayer" autoplay playsinline muted></video>
+        </div>
+
+        <div class="logs" id="logs"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let videoPlayer = document.getElementById('videoPlayer');
+        let statusEl = document.getElementById('status');
+        let frameCountEl = document.getElementById('frameCount');
+        let logsEl = document.getElementById('logs');
+        let frameCount = 0;
+        let mediaSource = null;
+        let sourceBuffer = null;
+        let queue = [];
+
+        function log(message) {
+            const time = new Date().toLocaleTimeString();
+            logsEl.innerHTML += `[${time}] ${message}\n`;
+            logsEl.scrollTop = logsEl.scrollHeight;
+        }
+
+        async function startWebSocket() {
+            try {
+                ws = new WebSocket('ws://192.168.1.132:8000/api/v1/ws');
+                
+                ws.binaryType = 'arraybuffer';
+                
+                ws.onopen = () => {
+                    log('WebSocket 连接成功');
+                    statusEl.textContent = '已连接';
+                    statusEl.style.color = '#00ff00';
+                    
+                    // 创建会话
+                    sendMessage('你好，请介绍一下自己');
+                };
+                
+                ws.onmessage = async (event) => {
+                    if (event.data instanceof ArrayBuffer) {
+                        await handleVideoData(event.data);
+                    } else {
+                        const message = JSON.parse(event.data);
+                        log(`收到消息: ${message.type}`);
+                        
+                        if (message.type === 'connected') {
+                            log(`会话ID: ${message.data.session_id}`);
+                        } else if (message.type === 'ai_text_chunk') {
+                            log(`AI: ${message.data.text}`);
+                        } else if (message.type === 'ai_audio') {
+                            log(`收到音频数据: ${message.data.audio_format}, ${message.data.sample_rate}Hz`);
+                        } else if (message.type === 'error') {
+                            log(`错误: ${message.data.message}`);
+                        }
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    log(`错误: ${error}`);
+                    statusEl.textContent = '连接错误';
+                    statusEl.style.color = '#ff0000';
+                };
+                
+                ws.onclose = () => {
+                    log('WebSocket 连接关闭');
+                    statusEl.textContent = '未连接';
+                    statusEl.style.style.color = '#ff9900';
+                };
+                
+            } catch (error) {
+                log(`连接失败: ${error}`);
+            }
+        }
+
+        function stopWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        async function handleVideoData(arrayBuffer) {
+            try {
+                // H.264 视频包处理
+                const data = new Uint8Array(arrayBuffer);
+                log(`收到视频数据: ${data.length} 字节`);
+                
+                // 检查是否是 H.264 帧头
+                const header = parseH264Header(data);
+                if (header) {
+                    log(`H.264 帧: type=${header.frame_type}, size=${header.payload_size}`);
+                }
+                
+                // 使用 MSE 解码并播放
+                await playH264Packet(data);
+                
+            } catch (error) {
+                log(`处理视频数据失败: ${error}`);
+            }
+        }
+
+        function parseH264Header(data) {
+            if (data.length < 12) return null;
+            
+            // 解析自定义包头
+            const messageType = data[0];      // 0x01 = video_packet
+            const frameType = data[1];       // 1 = keyframe, 2 = delta frame
+            const sequence = data[2];       // sequence (ignored)
+            const timestamp = data[3];      // timestamp
+            const sizeHigh = data[4];
+            const sizeLow = data[5];
+            const payloadSize = (sizeHigh << 8) | sizeLow;
+            
+            return {
+                message_type: messageType,
+                frame_type: frameType === 1 ? 'keyframe' : 'delta',
+                payload_size: payloadSize
+            };
+        }
+
+        async function playH264Packet(data) {
+            try {
+                // 跳过包头（12字节）
+                const h264Data = data.slice(12);
+                
+                if (!mediaSource) {
+                    mediaSource = new MediaSource();
+                    videoPlayer.src = URL.createObjectURL(mediaSource);
+                    mediaSource.addEventListener('sourceopen', () => {
+                        log('MediaSource 已打开');
+                    });
+                    
+                    sourceBuffer = mediaSource.addSourceBuffer('video/mp4; codecs="avc1.42E01E, mp4a.40.2"');
+                    mediaSource.endOfStream();
+                }
+                
+                if (sourceBuffer && sourceBuffer.updating === false) {
+                    sourceBuffer.appendBuffer(h264Data.buffer);
+                    frameCount++;
+                    frameCountEl.textContent = frameCount;
+                    
+                    log(`添加视频帧: ${h264Data.length} 字节`);
+                    
+                    sourceBuffer.addEventListener('updateend', () => {
+                        if (frameCount % 30 === 0) {
+                            log(`已播放 ${frameCount} 帧`);
+                        }
+                    }, { once: true });
+                }
+                
+            } catch (error) {
+                log(`播放视频帧失败: ${error}`);
+            }
+        }
+
+        async function sendMessage(text) {
+            const message = text || document.getElementById('messageInput').value;
+            if (!message) return;
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'text_message',
+                    data: { text: message }
+                }));
+                
+                log(`发送消息: ${message}`);
+            } else {
+                log('WebSocket 未连接');
+            }
+        }
+
+        // 页面加载完成后自动连接
+        window.addEventListener('load', () => {
+            log('页面加载完成，等待用户操作');
+        });
+    </script>
+</body>
+</html>

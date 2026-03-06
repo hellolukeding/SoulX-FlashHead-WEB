@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>调试测试页面</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #00ff00;
+        }
+        .log {
+            background: #000;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #333;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            background: #007acc;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #005a9e;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 WebSocket 调试工具</h1>
+    
+    <div>
+        <button onclick="connect()">1. 连接 WebSocket</button>
+        <button onclick="initSession()">2. 初始化会话</button>
+        <button onclick="sendMessage()">3. 发送消息</button>
+    </div>
+
+    <div id="logs" class="log"></div>
+
+    <script>
+        let ws = null;
+        let sessionId = null;
+
+        function log(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const logDiv = document.getElementById('logs');
+            const color = type === 'error' ? '#ff4444' : type === 'success' ? '#00ff88' : '#00ff00';
+            logDiv.innerHTML = `<div style="color: ${color}">[${time}] ${msg}</div>` + logDiv.innerHTML;
+        }
+
+        function connect() {
+            log('正在连接 WebSocket...');
+            ws = new WebSocket('ws://192.168.1.132:8000/api/v1/video');
+
+            ws.onopen = () => {
+                log('✅ WebSocket 连接成功', 'success');
+            };
+
+            ws.onmessage = (event) => {
+                log(`📨 收到消息: ${event.data.substring(0, 100)}...`, 'info');
+                
+                try {
+                    const msg = JSON.parse(event.data);
+                    log(`   消息类型: ${msg.type}`, 'info');
+
+                    switch(msg.type) {
+                        case 'connected':
+                            sessionId = msg.session_id;
+                            log(`   Session ID: ${sessionId}`, 'success');
+                            break;
+                        case 'initialized':
+                            log(`✅ 会话初始化成功`, 'success');
+                            break;
+                        case 'ai_text_chunk':
+                            log(`📝 AI 文本: ${msg.data.text.substring(0, 50)}...`, 'success');
+                            break;
+                        case 'ai_audio':
+                            const audioSize = msg.data.audio_data ? msg.data.audio_data.length : 0;
+                            log(`🔊 收到音频: ${audioSize} bytes, ${msg.data.audio_format}, ${msg.data.sample_rate}Hz`, 'success');
+                            
+                            // 尝试播放音频
+                            if (msg.data.audio_data) {
+                                log('   正在播放音频...', 'info');
+                                playAudio(msg.data.audio_data);
+                            }
+                            break;
+                        case 'video_frame':
+                            const videoSize = msg.data.video_data ? msg.data.video_data.length : 0;
+                            log(`🎬 收到视频: ${msg.data.video_frames} 帧, ${videoSize} bytes`, 'success');
+                            break;
+                        case 'status':
+                            log(`📊 状态: ${msg.data.message}`, 'info');
+                            break;
+                        case 'complete':
+                            const status = msg.data.success ? '成功 ✅' : '失败 ❌';
+                            log(`✅ 处理完成: ${status}`, msg.data.success ? 'success' : 'error');
+                            break;
+                        case 'error':
+                            log(`❌ 错误: ${msg.message}`, 'error');
+                            break;
+                        default:
+                            log(`❓ 未知类型: ${msg.type}`, 'info');
+                    }
+                } catch(e) {
+                    log(`解析错误: ${e}`, 'error');
+                }
+            };
+
+            ws.onerror = (error) => {
+                log('❌ WebSocket 错误', 'error');
+            };
+
+            ws.onclose = () => {
+                log('🔌 WebSocket 连接关闭', 'info');
+            };
+        }
+
+        function initSession() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('❌ 请先连接 WebSocket', 'error');
+                return;
+            }
+
+            log('正在初始化会话...');
+            ws.send(JSON.stringify({
+                type: 'init',
+                data: { reference_image: 'default' }
+            }));
+        }
+
+        function sendMessage() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('❌ 请先连接 WebSocket', 'error');
+                return;
+            }
+
+            const text = prompt('请输入消息:', '你好');
+            if (!text) return;
+
+            log(`发送消息: ${text}`, 'info');
+            ws.send(JSON.stringify({
+                type: 'message',
+                data: { text: text }
+            }));
+        }
+
+        function playAudio(base64Audio) {
+            try {
+                log('   开始解码音频...');
+                const audioData = base64ToArrayBuffer(base64Audio);
+                log(`   解码完成: ${audioData.byteLength} bytes`);
+
+                const audioBlob = new Blob([audioData], { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                log(`   Blob URL: ${audioUrl}`);
+
+                const audio = new Audio(audioUrl);
+                log('   开始播放...');
+                
+                audio.play().then(() => {
+                    log('✅ 音频播放成功', 'success');
+                }).catch((e) => {
+                    log(`❌ 音频播放失败: ${e}`, 'error');
+                });
+
+                audio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    log('✅ 音频播放完成', 'success');
+                };
+
+            } catch (e) {
+                log(`❌ 音频处理失败: ${e}`, 'error');
+            }
+        }
+
+        function base64ToArrayBuffer(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        log('页面加载完成，请点击按钮测试');
+    </script>
+</body>
+</html>

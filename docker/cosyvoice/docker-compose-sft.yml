@@ -1,0 +1,40 @@
+# CosyVoice-300M-SFT TTS 服务 - Docker Compose 配置
+# 使用 vLLM 加速 LLM 推理
+
+services:
+  cosyvoice-sft:
+    image: cosyvoice-sft:latest
+    container_name: cosyvoice-sft-tts
+    build:
+      context: .
+      dockerfile: Dockerfile.sft
+    ports:
+      - "${COSYVOICE_SFT_PORT:-8003}:8002"
+    volumes:
+      # 挂载 CosyVoice 模型代码和预训练模型
+      - ${COSYVOICE_ROOT:-/opt/digital-human-platform/models/CosyVoice}:/models/CosyVoice:ro
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: '4gb'  # vLLM 需要更大的共享内存
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    networks:
+      - digital-human-network
+
+networks:
+  digital-human-network:
+    external: true
