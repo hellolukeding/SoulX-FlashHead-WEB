@@ -5,9 +5,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from loguru import logger
 
 from app.api.websocket.handler import manager, handler
+from app.api.websocket import video_stream_stage2  # 阶段2优化版
 
 
 router = APIRouter()
+
+# 包含视频流路由（使用阶段2优化版）
+router.include_router(video_stream_stage2.router, tags=["video_stream"])
 
 
 @router.websocket("/ws")

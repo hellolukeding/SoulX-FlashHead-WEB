@@ -1,5 +1,5 @@
 """
-SoulX-FlashHead 推理引擎封装
+SoulX-FlashHead 推理引擎封装 - 修复版
 """
 import sys
 import os
@@ -65,6 +65,10 @@ class FlashHeadInferenceEngine:
             是否加载成功
         """
         try:
+            # 🔧 修复：切换到 SoulX-FlashHead 目录以解决相对路径问题
+            original_dir = os.getcwd()
+            os.chdir('/opt/soulx/SoulX-FlashHead')
+            
             logger.info("开始加载 SoulX-FlashHead 模型...")
 
             # 模型路径 - 使用项目的 models 目录
@@ -127,6 +131,36 @@ class FlashHeadInferenceEngine:
                     orig_sr=sample_rate,
                     target_sr=self.config.audio_sample_rate
                 )
+
+            # 🔧 修复音频长度问题
+            # SoulX-FlashHead 要求固定的 frame_num = 33
+            # 模型内部使用固定的帧数，音频必须对应 33 帧
+            #
+            # 33 帧对应的音频长度: 33 * 16000 / 25 = 21120 samples (1.32秒)
+            #
+            FRAME_NUM = 33
+            TARGET_AUDIO_SAMPLES = FRAME_NUM * 16000 // 25  # 21120 samples
+            
+            current_length = len(audio_data)
+            
+            # 截取或填充到固定长度
+            if current_length >= TARGET_AUDIO_SAMPLES:
+                # 截取前 33 帧对应的音频
+                audio_data = audio_data[:TARGET_AUDIO_SAMPLES]
+                logger.info(f"[FlashHead] 音频截取: {current_length} → {len(audio_data)} samples")
+            else:
+                # 填充到 33 帧
+                padding_needed = TARGET_AUDIO_SAMPLES - current_length
+                audio_data = np.concatenate([
+                    audio_data,
+                    np.zeros(padding_needed, dtype=np.float32)
+                ])
+                logger.info(f"[FlashHead] 音频填充: {current_length} → {len(audio_data)} samples (增加 {padding_needed})")
+
+            # 验证
+            video_length = int(len(audio_data) * 25 / 16000)
+            logger.info(f"[FlashHead] 音频长度: {len(audio_data)} samples ({len(audio_data)/16000:.2f}秒), video_length: {video_length}")
+            logger.info(f"[FlashHead] 验证: video_length == 33 ? {video_length == FRAME_NUM}")
 
             # 获取音频嵌入
             audio_embedding = get_audio_embedding(self.pipeline, audio_data)
@@ -238,39 +272,10 @@ class FlashHeadInferenceEngine:
             torch.cuda.empty_cache()
 
         self.is_loaded = False
+        # 恢复工作目录
+        try:
+            os.chdir(original_dir)
+        except:
+            pass
+        
         logger.info("模型已卸载")
-
-
-# 测试代码
-if __name__ == "__main__":
-    from loguru import logger
-
-    # 配置日志
-    logger.add("../logs/inference.log", rotation="10 MB")
-
-    # 创建推理引擎
-    config = InferenceConfig(
-        model_type="lite",
-        use_face_crop=True
-    )
-
-    engine = FlashHeadInferenceEngine(config)
-
-    # 加载模型
-    reference_image = "/opt/soulx/SoulX-FlashHead/examples/girl.png"
-    if engine.load_model(reference_image):
-        logger.success("模型加载成功")
-
-        # 测试推理
-        audio_path = "/opt/soulx/SoulX-FlashHead/examples/podcast_sichuan_16k.wav"
-        video_frames = engine.process_audio_file(audio_path)
-
-        if video_frames is not None:
-            logger.success(f"视频生成成功: {video_frames.shape}")
-
-        # 性能指标
-        metrics = engine.get_performance_metrics()
-        logger.info(f"性能指标: {metrics}")
-
-        # 卸载模型
-        engine.unload()

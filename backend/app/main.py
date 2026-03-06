@@ -1,6 +1,15 @@
 """
 FastAPI 应用主入口
 """
+import sys
+import os
+
+# 添加 SoulX-FlashHead 到路径
+sys.path.insert(0, '/opt/soulx/SoulX-FlashHead')
+
+# 切换到 SoulX 目录以加载配置
+os.chdir('/opt/soulx/SoulX-FlashHead')
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -24,6 +33,7 @@ async def lifespan(app: FastAPI):
         gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
         logger.success(f"✅ GPU 可用: {gpu_name} ({gpu_memory:.1f} GB)")
         logger.info(f"   CUDA 版本: {torch.version.cuda}")
+        logger.info(f"   PyTorch 版本: {torch.__version__}")
     else:
         logger.warning("⚠️  GPU 不可用，将使用 CPU（性能较差）")
 
@@ -55,8 +65,8 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(rest_router, prefix="/api/v1")
-app.include_router(dialogue_router, prefix="/api/v1")  # 新增：对话路由
-app.include_router(websocket_router, prefix="/api/v1")
+app.include_router(dialogue_router, prefix="/api/v1")  # 对话路由
+app.include_router(websocket_router, prefix="/api/v1")  # WebSocket路由（视频生成）
 
 
 @app.get("/")
@@ -66,7 +76,13 @@ async def root():
         "name": "Digital Human Platform",
         "version": "1.0.0",
         "status": "running",
-        "message": "Real-time digital human platform backend"
+        "message": "Real-time digital human platform backend",
+        "features": {
+            "llm": True,
+            "tts": True,
+            "asr": True,
+            "video_generation": True  # ✅ 启用视频生成
+        }
     }
 
 
@@ -77,7 +93,9 @@ async def health_check():
     return {
         "status": "healthy",
         "gpu_available": torch.cuda.is_available(),
-        "cuda_version": torch.version.cuda if torch.cuda.is_available() else None
+        "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+        "pytorch_version": torch.__version__,
+        "video_generation": True  # ✅ 启用视频生成
     }
 
 

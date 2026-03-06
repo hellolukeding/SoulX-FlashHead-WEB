@@ -1,12 +1,12 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
+  "$schema": "https://schema.tauri.app/config/2.0.0",
   "productName": "livetalking-pc",
   "version": "0.1.0",
-  "identifier": "com.lukeding.livetalking-pc",
+  "identifier": "com.livetalking.app",
   "build": {
-    "beforeDevCommand": "yarn dev",
+    "beforeDevCommand": "vite",
+    "beforeBuildCommand": "vite build",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "yarn build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -14,9 +14,7 @@
       {
         "title": "livetalking-pc",
         "width": 1280,
-        "height": 960,
-        "dragDropEnabled": true,
-        "fileDropEnabled": false
+        "height": 960
       }
     ],
     "security": {
@@ -32,21 +30,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "macOS": {
-      "entitlements": "Entitlements.plist",
-      "infoPlist": {
-        "NSMicrophoneUsageDescription": "此应用需要麦克风权限来进行语音识别",
-        "NSSpeechRecognitionUsageDescription": "此应用需要语音识别权限"
-      }
-    },
-    "windows": {
-      "wix": {
-        "language": "zh-CN"
-      },
-      "nsis": {
-        "languages": ["SimpChinese"]
-      }
-    }
-  }
+    ]
+  },
+  "plugins": {}
 }

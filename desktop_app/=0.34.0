@@ -1,0 +1,36 @@
+Collecting transformers==4.57.3
+  Using cached transformers-4.57.3-py3-none-any.whl.metadata (43 kB)
+Requirement already satisfied: diffusers in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (0.34.0)
+Requirement already satisfied: filelock in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (3.25.0)
+Collecting huggingface-hub<1.0,>=0.34.0 (from transformers==4.57.3)
+  Using cached huggingface_hub-0.36.2-py3-none-any.whl.metadata (15 kB)
+Requirement already satisfied: numpy>=1.17 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (2.2.6)
+Requirement already satisfied: packaging>=20.0 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (26.0)
+Requirement already satisfied: pyyaml>=5.1 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (6.0.3)
+Requirement already satisfied: regex!=2019.12.17 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (2026.2.28)
+Requirement already satisfied: requests in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (2.32.5)
+Requirement already satisfied: tokenizers<=0.23.0,>=0.22.0 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (0.22.2)
+Requirement already satisfied: safetensors>=0.4.3 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (0.7.0)
+Requirement already satisfied: tqdm>=4.27 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from transformers==4.57.3) (4.67.3)
+Requirement already satisfied: importlib_metadata in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from diffusers) (8.7.1)
+Requirement already satisfied: Pillow in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from diffusers) (12.1.1)
+Requirement already satisfied: fsspec>=2023.5.0 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from huggingface-hub<1.0,>=0.34.0->transformers==4.57.3) (2026.2.0)
+Requirement already satisfied: hf-xet<2.0.0,>=1.1.3 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from huggingface-hub<1.0,>=0.34.0->transformers==4.57.3) (1.3.2)
+Requirement already satisfied: typing-extensions>=3.7.4.3 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from huggingface-hub<1.0,>=0.34.0->transformers==4.57.3) (4.15.0)
+Requirement already satisfied: zipp>=3.20 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from importlib_metadata->diffusers) (3.23.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from requests->transformers==4.57.3) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from requests->transformers==4.57.3) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from requests->transformers==4.57.3) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in /opt/digital-human-platform/backend/venv/lib/python3.12/site-packages (from requests->transformers==4.57.3) (2026.2.25)
+Using cached transformers-4.57.3-py3-none-any.whl (12.0 MB)
+Using cached huggingface_hub-0.36.2-py3-none-any.whl (566 kB)
+Installing collected packages: huggingface-hub, transformers
+  Attempting uninstall: huggingface-hub
+    Found existing installation: huggingface_hub 1.5.0
+    Uninstalling huggingface_hub-1.5.0:
+      Successfully uninstalled huggingface_hub-1.5.0
+  Attempting uninstall: transformers
+    Found existing installation: transformers 5.3.0
+    Uninstalling transformers-5.3.0:
+      Successfully uninstalled transformers-5.3.0
+Successfully installed huggingface-hub-0.36.2 transformers-4.57.3
