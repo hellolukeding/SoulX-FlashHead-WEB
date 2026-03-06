@@ -1,0 +1,107 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+env/
+ENV/
+.venv
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+dist-electron/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Model files
+models/*.safetensors
+models/*.pth
+models/*.pt
+models/*.bin
+
+# Generated files
+desktop_app/src-tauri/target/
+desktop_app/src-tauri/Cargo.lock
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Tauri
+desktop_app/src-tauri/target/
+desktop_app/src-tauri/WixTools
+
+# Rust
+**/*.rs.bk
+*.pdb
+
+# Temporary
+*.tmp
+*.temp
+.cache/
+
+# Model directories (exclude large model files)
+models/SoulX-FlashHead-1_3B/
+models/CosyVoice/
+models/*/pretrained_models/
+
+# Archives and backups
+archives/
+pytorch_backup/
+htmlcov/
+
+# But keep model configs
+!models/*.yaml
+!models/*.yml
+!models/*.json
+!models/*.txt

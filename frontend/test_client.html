@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数字人对话测试 - Digital Human Platform</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 900px;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .main-content {
+            padding: 30px;
+        }
+
+        .status-bar {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #dc3545;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected {
+            background: #28a745;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .video-container {
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 20px;
+            position: relative;
+            aspect-ratio: 1;
+        }
+
+        #videoCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .video-placeholder {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            text-align: center;
+        }
+
+        .chat-container {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 12px;
+            border-radius: 10px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+        }
+
+        .message.ai {
+            background: #f3e5f5;
+            border-left: 4px solid #9c27b0;
+        }
+
+        .message .sender {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+
+        .message .text {
+            line-height: 1.5;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .control-group input,
+        .control-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .control-group input:focus,
+        .control-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            flex: 1;
+            min-width: 150px;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #5a6268;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #c82333;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .logs {
+            background: #212529;
+            color: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 5px;
+            border-left: 3px solid #495057;
+        }
+
+        .log-entry.info {
+            border-left-color: #17a2b8;
+        }
+
+        .log-entry.success {
+            border-left-color: #28a745;
+        }
+
+        .log-entry.error {
+            border-left-color: #dc3545;
+        }
+
+        .log-entry.warning {
+            border-left-color: #ffc107;
+        }
+
+        .recording {
+            position: relative;
+        }
+
+        .recording::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            background: #dc3545;
+            border-radius: 50%;
+            animation: record 1s infinite;
+        }
+
+        @keyframes record {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+            50% { transform: translate(-50%, -50%) scale(1.5); opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 数字人对话测试</h1>
+            <p>Digital Human Platform - WebSocket 客户端</p>
+        </div>
+
+        <div class="main-content">
+            <!-- 状态栏 -->
+            <div class="status-bar">
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">未连接</span>
+                </div>
+                <div id="sessionId">会话 ID: -</div>
+            </div>
+
+            <!-- 视频显示 -->
+            <div class="video-container">
+                <canvas id="videoCanvas"></canvas>
+                <div class="video-placeholder" id="videoPlaceholder">
+                    <p>等待视频流...</p>
+                </div>
+            </div>
+
+            <!-- 对话历史 -->
+            <div class="chat-container" id="chatContainer">
+                <div class="message ai">
+                    <div class="sender">AI 助手</div>
+                    <div class="text">你好！我是数字人助手，有什么可以帮助你的吗？</div>
+                </div>
+            </div>
+
+            <!-- 控制面板 -->
+            <div class="controls">
+                <div class="control-group">
+                    <label>服务器地址</label>
+                    <input type="text" id="serverUrl" value="ws://localhost:8000/ws?token=test" placeholder="ws://localhost:8000/ws?token=test">
+                </div>
+                <div class="control-group">
+                    <label>参考图像 (Base64)</label>
+                    <textarea id="referenceImage" rows="3" placeholder="粘贴参考图像的 Base64 编码...">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==</textarea>
+                </div>
+                <div class="control-group">
+                    <label>输入文本</label>
+                    <textarea id="userText" rows="3" placeholder="输入你想说的话...">你好，请介绍一下自己</textarea>
+                </div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="buttons">
+                <button class="btn-primary" id="btnConnect" onclick="connect()">
+                    🔌 连接服务器
+                </button>
+                <button class="btn-secondary" id="btnDisconnect" onclick="disconnect()" disabled>
+                    🔌 断开连接
+                </button>
+                <button class="btn-primary" id="btnCreateSession" onclick="createSession()" disabled>
+                    🎬 创建会话
+                </button>
+                <button class="btn-primary" id="btnSendText" onclick="sendTextMessage()" disabled>
+                    💬 发送文本
+                </button>
+                <button class="btn-danger" id="btnRecord" onclick="toggleRecording()" disabled>
+                    🎤 录音
+                </button>
+                <button class="btn-secondary" onclick="clearLogs()">
+                    🗑️ 清空日志
+                </button>
+            </div>
+
+            <!-- 日志 -->
+            <div style="margin-top: 20px;">
+                <label style="font-weight: 600; margin-bottom: 10px; display: block;">系统日志</label>
+                <div class="logs" id="logs">
+                    <div class="log-entry info">系统初始化完成</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let sessionId = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let aiTextBuffer = '';
+        let audioContext = null;
+
+        // 日志函数
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${timestamp}] ${message}`;
+            logs.appendChild(entry);
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        // 更新连接状态
+        function updateStatus(connected, sessionId = null) {
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            const sessionIdDisplay = document.getElementById('sessionId');
+
+            if (connected) {
+                statusDot.classList.add('connected');
+                statusText.textContent = '已连接';
+                sessionIdDisplay.textContent = `会话 ID: ${sessionId || '-'}`;
+            } else {
+                statusDot.classList.remove('connected');
+                statusText.textContent = '未连接';
+                sessionIdDisplay.textContent = '会话 ID: -';
+            }
+        }
+
+        // 连接 WebSocket
+        function connect() {
+            const url = document.getElementById('serverUrl').value;
+
+            if (!url) {
+                log('请输入服务器地址', 'error');
+                return;
+            }
+
+            log(`连接到服务器: ${url}`, 'info');
+
+            try {
+                ws = new WebSocket(url);
+
+                ws.onopen = () => {
+                    log('WebSocket 连接成功', 'success');
+                    updateStatus(true);
+                    updateButtons(true);
+                };
+
+                ws.onmessage = (event) => {
+                    handleMessage(event.data);
+                };
+
+                ws.onerror = (error) => {
+                    log('WebSocket 错误: ' + error, 'error');
+                };
+
+                ws.onclose = () => {
+                    log('WebSocket 连接关闭', 'warning');
+                    updateStatus(false);
+                    updateButtons(false);
+                };
+            } catch (error) {
+                log('连接失败: ' + error.message, 'error');
+            }
+        }
+
+        // 断开连接
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                log('主动断开连接', 'info');
+            }
+        }
+
+        // 创建会话
+        function createSession() {
+            const referenceImage = document.getElementById('referenceImage').value;
+
+            if (!referenceImage) {
+                log('请提供参考图像', 'error');
+                return;
+            }
+
+            const message = {
+                type: 'create_session',
+                data: {
+                    model_type: 'lite',
+                    reference_image: referenceImage
+                }
+            };
+
+            ws.send(JSON.stringify(message));
+            log('发送创建会话请求...', 'info');
+        }
+
+        // 发送文本消息
+        function sendTextMessage() {
+            const text = document.getElementById('userText').value;
+
+            if (!text) {
+                log('请输入文本', 'error');
+                return;
+            }
+
+            const message = {
+                type: 'text_message',
+                data: {
+                    text: text
+                }
+            };
+
+            ws.send(JSON.stringify(message));
+            log(`发送文本消息: ${text}`, 'info');
+
+            // 添加用户消息到聊天记录
+            addMessage('user', text);
+        }
+
+        // 录音控制
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    await sendAudioMessage(audioBlob);
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                document.getElementById('btnRecord').textContent = '⏹️ 停止录音';
+                document.getElementById('btnRecord').classList.add('recording');
+                log('开始录音...', 'info');
+            } catch (error) {
+                log('无法访问麦克风: ' + error.message, 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                document.getElementById('btnRecord').textContent = '🎤 录音';
+                document.getElementById('btnRecord').classList.remove('recording');
+                log('录音结束', 'info');
+            }
+        }
+
+        async function sendAudioMessage(audioBlob) {
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
+            const message = {
+                type: 'user_message',
+                data: {
+                    audio_data: base64,
+                    format: 'wav'
+                }
+            };
+
+            ws.send(JSON.stringify(message));
+            log('发送音频消息...', 'info');
+        }
+
+        // 处理服务器消息
+        function handleMessage(data) {
+            try {
+                let message;
+                if (typeof data === 'string') {
+                    message = JSON.parse(data);
+                } else {
+                    log('收到二进制数据: ' + data.byteLength + ' bytes', 'info');
+                    return;
+                }
+
+                const type = message.type;
+                const msgData = message.data || {};
+
+                switch (type) {
+                    case 'connected':
+                        log('服务器已接受连接', 'success');
+                        if (msgData.session_id) {
+                            sessionId = msgData.session_id;
+                            updateStatus(true, sessionId);
+                        }
+                        break;
+
+                    case 'session_created':
+                        log('会话创建成功', 'success');
+                        document.getElementById('videoPlaceholder').style.display = 'none';
+                        break;
+
+                    case 'user_text':
+                        log(`ASR 识别: ${msgData.text}`, 'info');
+                        addMessage('user', msgData.text);
+                        break;
+
+                    case 'ai_text_chunk':
+                        // 流式文本片段
+                        aiTextBuffer += msgData.text;
+                        updateAIMessage(aiTextBuffer);
+                        break;
+
+                    case 'ai_text_complete':
+                        log(`AI 回复: ${msgData.text}`, 'success');
+                        aiTextBuffer = '';
+                        addMessage('ai', msgData.text);
+                        break;
+
+                    case 'ai_audio':
+                        log(`收到 AI 音频: ${msgData.data.length} bytes`, 'success');
+                        playAudio(msgData.audio_data);
+                        break;
+
+                    case 'audio_received':
+                        log(`音频已接收: ${msgData.status}`, 'info');
+                        break;
+
+                    case 'error':
+                        log(`错误: ${msgData.message}`, 'error');
+                        break;
+
+                    case 'pong':
+                        // 心跳响应
+                        break;
+
+                    default:
+                        log(`未知消息类型: ${type}`, 'warning');
+                }
+            } catch (error) {
+                log('解析消息失败: ' + error.message, 'error');
+            }
+        }
+
+        // 添加消息到聊天记录
+        function addMessage(sender, text) {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}`;
+            messageDiv.innerHTML = `
+                <div class="sender">${sender === 'user' ? '👤 用户' : '🤖 AI 助手'}</div>
+                <div class="text">${text}</div>
+            `;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // 更新 AI 消息（流式）
+        function updateAIMessage(text) {
+            const chatContainer = document.getElementById('chatContainer');
+            let lastMessage = chatContainer.lastElementChild;
+
+            if (!lastMessage || !lastMessage.classList.contains('ai')) {
+                addMessage('ai', text);
+            } else {
+                const textDiv = lastMessage.querySelector('.text');
+                textDiv.textContent = text;
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // 播放音频
+        async function playAudio(base64Audio) {
+            try {
+                const audioData = atob(base64Audio);
+                const arrayBuffer = new ArrayBuffer(audioData.length);
+                const view = new Uint8Array(arrayBuffer);
+
+                for (let i = 0; i < audioData.length; i++) {
+                    view[i] = audioData.charCodeAt(i);
+                }
+
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                source.start();
+
+                log('播放 AI 音频', 'success');
+            } catch (error) {
+                log('播放音频失败: ' + error.message, 'error');
+            }
+        }
+
+        // 更新按钮状态
+        function updateButtons(connected) {
+            document.getElementById('btnConnect').disabled = connected;
+            document.getElementById('btnDisconnect').disabled = !connected;
+            document.getElementById('btnCreateSession').disabled = !connected;
+            document.getElementById('btnSendText').disabled = !connected;
+            document.getElementById('btnRecord').disabled = !connected;
+        }
+
+        // 清空日志
+        function clearLogs() {
+            document.getElementById('logs').innerHTML = '';
+            log('日志已清空', 'info');
+        }
+
+        // 页面加载完成
+        window.addEventListener('load', () => {
+            log('页面加载完成', 'success');
+            log('准备连接到服务器...', 'info');
+        });
+
+        // 页面卸载
+        window.addEventListener('beforeunload', () => {
+            if (ws) {
+                ws.close();
+            }
+        });
+    </script>
+</body>
+</html>

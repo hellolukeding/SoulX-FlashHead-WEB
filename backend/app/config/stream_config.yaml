@@ -1,0 +1,34 @@
+stream:
+  audio:
+    window_size: 1.0
+    sample_rate: 16000
+    channels: 1
+    supported_formats:
+      - wav
+      - mp3
+      - ogg
+
+  video:
+    fps: 25
+    resolution: [512, 512]
+    codec: h264_nvenc
+    bitrate: 2M
+    preset: p6
+    tune: ll
+    gop_size: 25
+    codec_fallback: libx264
+
+  session:
+    max_concurrent: 5
+    cleanup_interval: 300
+    idle_timeout: 300
+
+  gpu:
+    max_memory_utilization: 0.9
+    enable_nvenc: true
+
+  logging:
+    level: DEBUG
+    performance: true
+    request_log: true
+    log_file: logs/streaming.log
