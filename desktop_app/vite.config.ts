@@ -31,10 +31,11 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
     proxy: {
-      '/offer': 'http://localhost:8010',
-      '/human': 'http://localhost:8010',
-      '/record': 'http://localhost:8010',
-      '/is_speaking': 'http://localhost:8010',
+      '/api/v1': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (path) => path,  // Keep /api/v1 prefix
+      },
     },
   },
 }));

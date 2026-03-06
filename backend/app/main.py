@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 
 from app.api.rest.routes import router as rest_router
+from app.api.rest.dialogue_routes import router as dialogue_router
 from app.api.websocket.websocket import router as websocket_router
 from app.core.config import settings
 
@@ -54,6 +55,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(rest_router, prefix="/api/v1")
+app.include_router(dialogue_router, prefix="/api/v1")  # 新增：对话路由
 app.include_router(websocket_router, prefix="/api/v1")
 
 

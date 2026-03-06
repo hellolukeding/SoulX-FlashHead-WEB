@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const client = axios.create({
-    baseURL: '/', // Vite proxy will handle the forwarding to localhost:8000
+    baseURL: '/api/v1', // API endpoint prefix
     headers: {
         'Content-Type': 'application/json',
     },
